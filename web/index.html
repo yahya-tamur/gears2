@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Gear Generator</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <main class="layout">
+    <form id="options" class="options" autocomplete="off" novalidate>
+      <h1>Gear generator</h1>
+      <div id="fields"></div>
+      <div class="actions">
+        <button type="submit" id="generate" disabled>Loading…</button>
+        <button type="button" id="download" disabled>Download STL</button>
+      </div>
+      <p id="status" class="status" role="status"></p>
+    </form>
+    <div class="resizer" id="resizer" role="separator" aria-orientation="vertical" aria-label="Resize the options column"></div>
+
+    <section class="viewer">
+      <canvas id="canvas"></canvas>
+      <p class="hint">Drag to rotate, scroll to zoom, right-drag to pan.</p>
+    </section>
+  </main>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
