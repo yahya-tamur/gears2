@@ -452,6 +452,20 @@ pub fn triangulate(loops: &[Vec<P>], min_angle: f64, ds: f64, creases: &[Vec<P>]
 }
 
 pub fn triangulate_with_limit(loops: &[Vec<P>], min_angle: f64, ds: f64, creases: &[Vec<P>], max_points: usize) -> Result<Triangulated> {
+    triangulate_sized(loops, min_angle, ds, creases, max_points, &|_| f64::INFINITY)
+}
+
+/// triangulate() that also refines every triangle whose circumradius is above
+/// max_radius(centroid) (for faces that are later bent onto a curved surface,
+/// where a triangle's size sets how far it strays from the surface).
+pub fn triangulate_sized(
+    loops: &[Vec<P>],
+    min_angle: f64,
+    ds: f64,
+    creases: &[Vec<P>],
+    max_points: usize,
+    max_radius: &dyn Fn(P) -> f64,
+) -> Result<Triangulated> {
     let fixed: Vec<&Vec<P>> = loops.iter().chain(creases.iter()).collect();
     let all: Vec<P> = fixed.iter().flat_map(|l| l.iter().copied()).collect();
     let mut tr = Triangulation::new(&all);
@@ -549,7 +563,8 @@ pub fn triangulate_with_limit(loops: &[Vec<P>], min_angle: f64, ds: f64, creases
         let (a, b, c) = (tr.points[a], tr.points[b], tr.points[c]);
         let shortest = (b.0 - a.0).hypot(b.1 - a.1).min((c.0 - b.0).hypot(c.1 - b.1)).min((a.0 - c.0).hypot(a.1 - c.1));
         let cc = circumcenter(a, b, c);
-        (cc.0 - a.0).hypot(cc.1 - a.1) > ratio * shortest
+        let radius = (cc.0 - a.0).hypot(cc.1 - a.1);
+        radius > ratio * shortest || radius > max_radius(((a.0 + b.0 + c.0) / 3.0, (a.1 + b.1 + c.1) / 3.0))
     };
 
     let mut unsplittable: FxHashSet<(usize, usize)> = FxHashSet::default();
@@ -1030,7 +1045,7 @@ fn gear_solid(s: &GearSystem, teeth: usize, zones: &EndZones, loops: Vec<Vec<P>>
 /// boundary points u -> v: always advance the chain whose next vertex is
 /// lower. When both are at the same height (a quad), split it along its
 /// shorter diagonal.
-fn stitch(mesh: &mut IndexedMesh, cu: &[(f64, usize)], cv: &[(f64, usize)]) {
+pub(crate) fn stitch(mesh: &mut IndexedMesh, cu: &[(f64, usize)], cv: &[(f64, usize)]) {
     let (mut i, mut j) = (0, 0);
     while i < cu.len() - 1 || j < cv.len() - 1 {
         let advance_v = if i == cu.len() - 1 {

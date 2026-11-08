@@ -738,8 +738,8 @@ impl GearSystem {
         // within a tooth, on the safe side.)
         if (teeth as f64) < 1.2 * self.z_rack() {
             return Some(
-                "the tooth tips of a mating gear (a ring gear, in the worst case) would reach below \
-                 where this gear's involute begins",
+                "the tooth tips of a mating gear (a ring gear, in the worst case) would reach too deep \
+                 into the gaps, below where the tooth sides can be shaped to mesh",
             );
         }
         if self.external_contact_ratio(teeth, teeth) < 1.0 {
@@ -758,7 +758,7 @@ impl GearSystem {
         let r_tip = r - self.height / 2.0;
         let r_root = r + self.height / 2.0 + self.clearance;
         if r_tip < rb {
-            return Some("the tooth tips would reach inside the base circle, where there is no involute");
+            return Some("the tooth tips would reach too far toward the center, where the tooth sides can't be shaped to mesh");
         }
         let flank = Flank::new(rb, r, self.pressure_angle, (self.pitch + self.backlash) / 2.0);
         if (2.0 * PI / teeth as f64 - 2.0 * flank.half_angle(r_tip)) * r_tip < self.min_land {

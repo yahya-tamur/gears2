@@ -6,6 +6,7 @@
 //! with positions as a Float32Array of x, y, z triples and indices as a
 //! Uint32Array of vertex triples.
 
+use crate::bevel::bevel_pair_mesh;
 use crate::gears::{GearError, GearSystem, Params};
 use crate::mesh::{planetary_gear_mesh, ring_gear_mesh, spur_gear_mesh, IndexedMesh};
 use serde::Deserialize;
@@ -38,6 +39,21 @@ pub struct Options {
     pub sun_teeth: f64,
     pub planet_teeth: f64,
     pub planets: f64,
+    // bevel pair
+    #[serde(default)]
+    pub teeth2: f64,
+    #[serde(default)]
+    pub shaft_angle: f64,
+    #[serde(default)]
+    pub face_width: f64,
+    #[serde(default)]
+    pub bore2: f64,
+    #[serde(default)]
+    pub backlash_inner: Option<f64>,
+    #[serde(default)]
+    pub backlash_outer: Option<f64>,
+    #[serde(default)]
+    pub layout: Option<String>,
 }
 
 /// Summary shown under the options.
@@ -58,14 +74,20 @@ fn whole(value: f64, name: &str) -> Result<usize, GearError> {
 /// point and the tests).
 pub fn build_parts(o: &Options) -> Result<(Vec<IndexedMesh>, Info), GearError> {
     let degrees = PI / 180.0;
-    let mut params = Params::new(
-        o.module * PI,
-        o.pressure_angle * degrees,
-        o.height,
-        o.backlash,
-        o.max_deviation,
-        o.ds,
-    );
+    // A bevel pair's backlash is given at one end of the teeth, the other left blank.
+    let (backlash, at_toe) = if o.kind == "bevel" {
+        match (o.backlash_inner, o.backlash_outer) {
+            (Some(b), None) => (b, true),
+            (None, Some(b)) => (b, false),
+            (Some(_), Some(_)) => {
+                return Err(GearError("Set the backlash at one end of the teeth only; leave the other blank (auto).".into()))
+            }
+            (None, None) => return Err(GearError("Set the backlash at one end of the teeth.".into())),
+        }
+    } else {
+        (o.backlash, false)
+    };
+    let mut params = Params::new(o.module * PI, o.pressure_angle * degrees, o.height, backlash, o.max_deviation, o.ds);
     params.helix_angle = o.helix_angle * degrees;
     params.clearance = o.clearance;
     params.fillet_radius = o.fillet_radius;
@@ -86,6 +108,16 @@ pub fn build_parts(o: &Options) -> Result<(Vec<IndexedMesh>, Info), GearError> {
             o.hand,
             o.end_bottom,
             o.end_top,
+        )?,
+        "bevel" => bevel_pair_mesh(
+            &s,
+            [whole(o.teeth, "Gear 1 teeth")?, whole(o.teeth2, "Gear 2 teeth")?],
+            o.shaft_angle * degrees,
+            o.face_width,
+            [o.bore, o.bore2],
+            o.hand,
+            at_toe,
+            o.layout.as_deref() != Some("print"),
         )?,
         other => return Err(GearError(format!("Unknown gear type {:?}.", other))),
     };

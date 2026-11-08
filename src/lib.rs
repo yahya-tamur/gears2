@@ -1,5 +1,6 @@
 //! Herringbone spur, ring and planetary gears as closed triangle meshes.
 //!
+//! - `bevel`: bevel gear pairs (spherical involutes) and their meshes.
 //! - `gears`: the tooth system and 2D outlines (GearSystem).
 //! - `mesh`: indexed meshes, constrained Delaunay triangulation with
 //!   Ruppert refinement, and gear solids.
@@ -9,6 +10,7 @@
 // that also rejects NaN.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
+pub mod bevel;
 pub mod gears;
 pub mod mesh;
 pub mod web;

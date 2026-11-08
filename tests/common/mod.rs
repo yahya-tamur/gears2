@@ -1,6 +1,8 @@
 //! Helpers for checking 2D gear outlines and pairs of meshing gears.
 #![allow(dead_code)]
 
+pub mod sphere;
+
 use gears2::gears::{GearSystem, Params, P};
 use std::f64::consts::PI;
 
