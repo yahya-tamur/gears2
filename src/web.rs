@@ -20,7 +20,7 @@ pub struct Options {
     pub module: f64,
     pub pressure_angle: f64,
     pub helix_angle: f64,
-    pub height: f64,
+    pub height: Option<f64>,
     pub backlash: f64,
     pub clearance: Option<f64>,
     pub fillet_radius: Option<f64>,
@@ -28,8 +28,8 @@ pub struct Options {
     pub max_deviation: f64,
     pub ds: f64,
     pub hand: i32,
-    pub end_bottom: f64,
-    pub end_top: f64,
+    pub end_bottom: Option<f64>,
+    pub end_top: Option<f64>,
     pub width: f64,
     pub bore: f64,
     pub planet_bore: f64,
@@ -87,15 +87,21 @@ pub fn build_parts(o: &Options) -> Result<(Vec<IndexedMesh>, Info), GearError> {
     } else {
         (o.backlash, false)
     };
-    let mut params = Params::new(o.module * PI, o.pressure_angle * degrees, o.height, backlash, o.max_deviation, o.ds);
+    // Tooth height left blank: the standard 2 * module.
+    let height = o.height.unwrap_or(2.0 * o.module);
+    let mut params = Params::new(o.module * PI, o.pressure_angle * degrees, height, backlash, o.max_deviation, o.ds);
     params.helix_angle = o.helix_angle * degrees;
     params.clearance = o.clearance;
     params.fillet_radius = o.fillet_radius;
     params.fillet_deviation = o.fillet_deviation;
     let s = GearSystem::new(&params)?;
+    // Chamfers left blank: a 45 degree slope, as tall as the cone's radial run
+    // from the tip circle to the fold circle (see mesh::EndZones).
+    let slope_45 = s.height + s.clearance + s.module() / 4.0;
+    let (end_bottom, end_top) = (o.end_bottom.unwrap_or(slope_45), o.end_top.unwrap_or(slope_45));
     let parts = match o.kind.as_str() {
-        "spur" => vec![spur_gear_mesh(&s, whole(o.teeth, "Teeth")?, o.width, o.bore, o.hand, o.end_bottom, o.end_top)?],
-        "ring" => vec![ring_gear_mesh(&s, whole(o.ring_teeth, "Teeth")?, o.width, o.rim, o.hand, o.end_bottom, o.end_top)?],
+        "spur" => vec![spur_gear_mesh(&s, whole(o.teeth, "Teeth")?, o.width, o.bore, o.hand, end_bottom, end_top)?],
+        "ring" => vec![ring_gear_mesh(&s, whole(o.ring_teeth, "Teeth")?, o.width, o.rim, o.hand, end_bottom, end_top)?],
         "planetary" => planetary_gear_mesh(
             &s,
             whole(o.sun_teeth, "Sun teeth")?,
@@ -106,8 +112,8 @@ pub fn build_parts(o: &Options) -> Result<(Vec<IndexedMesh>, Info), GearError> {
             o.bore,
             o.planet_bore,
             o.hand,
-            o.end_bottom,
-            o.end_top,
+            end_bottom,
+            end_top,
         )?,
         "bevel" => bevel_pair_mesh(
             &s,

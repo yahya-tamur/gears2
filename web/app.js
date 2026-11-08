@@ -23,8 +23,8 @@ const SECTIONS = [
         help: "Slope of the tooth sides at the pitch circle (see Module). 20° is standard. Larger angles give stronger but more pointed teeth, which push the gears apart harder." },
       { name: "helix_angle", label: "Helix angle", unit: "°", value: "30",
         help: "The teeth are herringbone: V-shaped, slanting one way in one half of the gear and back in the other. This is the angle of that slant from straight across. 0° gives straight teeth. Slanted teeth run smoother and quieter, and the V cancels the sideways push a single slant would make." },
-      { name: "height", label: "Tooth height", unit: "mm", value: "4",
-        help: () => `How far each tooth reaches into its mate: half of it above the pitch circle (see Module), half below. The gaps go a root gap deeper. The standard is 2 × module${now(2 * num("module", NaN), "for this module: ")}.` },
+      { name: "height", label: "Tooth height", unit: "mm", optional: "auto",
+        help: () => `How far each tooth reaches into its mate: half of it above the pitch circle (see Module), half below. The gaps go a root gap deeper. Leave blank for the standard 2 × module${now(toothHeight())}.` },
       { name: "backlash", label: "Backlash", unit: "mm", value: "0.2", kinds: ["spur", "ring", "planetary"],
         help: "Play between meshing teeth: hold one gear, and the other can rock back and forth by this much, measured along its pitch circle (see Module). Leaves room for printing tolerances; 0.1–0.3 mm is typical." },
       { name: "clearance", label: "Root gap", unit: "mm", optional: "auto",
@@ -91,9 +91,9 @@ const SECTIONS = [
           planetary: "Which way the lower half of the sun's herringbone teeth (see Helix angle) turns going up, seen from above. The planets and the ring get the matching directions automatically.",
           bevel: "With gear 1 standing on its flat back: which way the outer half of its herringbone teeth (see Helix angle) turns going up toward the inner end, seen from above. Gear 2 gets the matching direction automatically.",
         } },
-      { name: "end_bottom", label: "Bottom chamfer", unit: "mm", value: "5", kinds: ["spur", "ring", "planetary"],
+      { name: "end_bottom", label: "Bottom chamfer", unit: "mm", optional: "auto", kinds: ["spur", "ring", "planetary"],
         help: () => chamferHelp("below") },
-      { name: "end_top", label: "Top chamfer", unit: "mm", value: "5", kinds: ["spur", "ring", "planetary"],
+      { name: "end_top", label: "Top chamfer", unit: "mm", optional: "auto", kinds: ["spur", "ring", "planetary"],
         help: () => chamferHelp("above") },
       { name: "layout", label: "STL layout", select: [["assembled", "Assembled"], ["print", "Ready to print"]], value: "assembled", kinds: ["bevel"],
         help: "Assembled: the two gears in place, meshing. Ready to print: each gear standing on its flat back, side by side." },
@@ -124,6 +124,7 @@ function now(value, prefix = "") {
   return Number.isFinite(value) && value >= 0 ? ` (${prefix ? prefix : "now "}${+value.toFixed(3)} mm)` : "";
 }
 const rootGap = () => num("clearance", num("module", NaN) / 4);
+const toothHeight = () => num("height", 2 * num("module", NaN));
 // Bevel pair: inner end / outer end, as cone distances (R - face width) / R.
 function bevelToe() {
   const [z1, z2, shaft] = [num("teeth", NaN), num("teeth2", NaN), num("shaft_angle", NaN) * Math.PI / 180];
@@ -136,10 +137,8 @@ function bevelToe() {
 // bottoms, so its slope is 45° when its height equals that radial run.
 function chamferHelp(where) {
   const module = num("module", NaN);
-  const run = num("height", NaN) + rootGap() + module / 4;
-  const at = Number.isFinite(run) && run > 0 ? ` (now ${+run.toFixed(3)} mm)` : "";
   return `Extra height ${where} the face width where the teeth taper off, so no edge is sharper than a right angle. ` +
-    `Tooth height + root gap + module ÷ 4${at} gives a 45° slope. 0 for a flat end.`;
+    `Leave blank for a 45° slope: tooth height + root gap + module ÷ 4${now(toothHeight() + rootGap() + module / 4)}. 0 for a flat end.`;
 }
 
 const form = document.getElementById("options");
