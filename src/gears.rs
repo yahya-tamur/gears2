@@ -564,7 +564,7 @@ impl GearSystem {
             return err("The smallest point spacing must be positive.");
         }
         if !(0.0..PI / 2.0).contains(&helix_angle) {
-            return err("The helix angle must be between 0 and 90 degrees.");
+            return err("The helix angle must be between 0 and 90 degrees (to slant the other way, change the twist direction).");
         }
         let module = pitch / PI;
         let clearance = params.clearance.unwrap_or(0.25 * module);

@@ -524,7 +524,7 @@ function readOptions() {
       const value = Number(text);
       let problem = null;
       if (text === "" || !Number.isFinite(value)) problem = "needs a number";
-      else if (value < 0) problem = "can't be negative";
+      else if (value < 0) problem = f.name === "helix_angle" ? "can't be negative: change the twist direction instead" : "can't be negative";
       else if (f.whole && !Number.isInteger(value)) problem = "needs a whole number";
       if (problem) {
         if (used) {
