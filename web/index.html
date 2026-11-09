@@ -20,11 +20,15 @@
     <form id="options" class="options" autocomplete="off" novalidate>
       <h1>Gear generator</h1>
       <div id="fields"></div>
-      <div class="actions">
-        <button type="submit" id="generate" disabled>Loading…</button>
-        <button type="button" id="download" disabled>Download STL</button>
+      <div class="dock">
+        <p id="error" class="error-box" role="alert" hidden></p>
+        <div class="actions">
+          <button type="submit" id="generate" disabled>Loading…</button>
+          <button type="button" id="download" disabled>Download STL</button>
+        </div>
+        <p id="status" class="status" role="status"></p>
+        <button type="button" id="restore" class="restore" hidden>Restore the values from before the search</button>
       </div>
-      <p id="status" class="status" role="status"></p>
     </form>
     <div class="resizer" id="resizer" role="separator" aria-orientation="vertical" aria-label="Resize the options column"></div>
 

@@ -369,6 +369,16 @@ impl BevelPair {
     /// The pair from a gear set. backlash_at_toe: the gear set's backlash is
     /// the play at the toe (the smallest) instead of at the heel.
     pub fn new(s: &GearSystem, teeth: [usize; 2], shaft_angle: f64, face: f64, backlash_at_toe: bool) -> Result<Self> {
+        let mut pair = Self::checked(s, teeth, shaft_angle, face, backlash_at_toe)?;
+        for i in 0..2 {
+            pair.choose_fillet(i, s);
+        }
+        Ok(pair)
+    }
+
+    /// Everything new() checks, without choosing the fillets (fast; for
+    /// searching parameters). The fillets are left sharp.
+    pub fn checked(s: &GearSystem, teeth: [usize; 2], shaft_angle: f64, face: f64, backlash_at_toe: bool) -> Result<Self> {
         if teeth[0] < 3 || teeth[1] < 3 {
             return err("Each bevel gear needs at least 3 teeth.");
         }
@@ -443,9 +453,6 @@ impl BevelPair {
         pair.check()?;
         for i in 0..2 {
             pair.gears[i].contact = pair.contact(i)?;
-        }
-        for i in 0..2 {
-            pair.choose_fillet(i, s);
         }
         Ok(pair)
     }

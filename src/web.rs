@@ -6,15 +6,15 @@
 //! with positions as a Float32Array of x, y, z triples and indices as a
 //! Uint32Array of vertex triples.
 
-use crate::bevel::bevel_pair_mesh;
+use crate::bevel::{bevel_pair_mesh, BevelPair};
 use crate::gears::{GearError, GearSystem, Params};
-use crate::mesh::{planetary_gear_mesh, ring_gear_mesh, spur_gear_mesh, IndexedMesh};
+use crate::mesh::{planetary_gear_mesh, ring_gear_mesh, spur_gear_mesh, EndZones, IndexedMesh};
 use serde::Deserialize;
 use std::f64::consts::PI;
 use wasm_bindgen::prelude::*;
 
 /// The page's options (see web/index.html).
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct Options {
     pub kind: String,
     pub module: f64,
@@ -70,9 +70,9 @@ fn whole(value: f64, name: &str) -> Result<usize, GearError> {
     Ok(value as usize)
 }
 
-/// Build the meshes for the page's options (shared by the WebAssembly entry
-/// point and the tests).
-pub fn build_parts(o: &Options) -> Result<(Vec<IndexedMesh>, Info), GearError> {
+/// The gear set for the page's options, whether a bevel pair's backlash is
+/// at the toe, and the chamfer lengths (auto values filled in).
+fn gear_set(o: &Options, quick: bool) -> Result<(GearSystem, bool, f64, f64), GearError> {
     let degrees = PI / 180.0;
     // A bevel pair's backlash is given at one end of the teeth, the other left blank.
     let (backlash, at_toe) = if o.kind == "bevel" {
@@ -94,11 +94,116 @@ pub fn build_parts(o: &Options) -> Result<(Vec<IndexedMesh>, Info), GearError> {
     params.clearance = o.clearance;
     params.fillet_radius = o.fillet_radius;
     params.fillet_deviation = o.fillet_deviation;
-    let s = GearSystem::new(&params)?;
+    let s = if quick { GearSystem::new_quick(&params, 400)? } else { GearSystem::new(&params)? };
     // Chamfers left blank: a 45 degree slope, as tall as the cone's radial run
     // from the tip circle to the fold circle (see mesh::EndZones).
     let slope_45 = s.height + s.clearance + s.module() / 4.0;
-    let (end_bottom, end_top) = (o.end_bottom.unwrap_or(slope_45), o.end_top.unwrap_or(slope_45));
+    Ok((s, at_toe, o.end_bottom.unwrap_or(slope_45), o.end_top.unwrap_or(slope_45)))
+}
+
+/// How far the options are from building: 0 if they pass every check that
+/// building makes (without building any meshes), otherwise a positive score
+/// that shrinks as they get closer (mm of bore too wide, teeth short of the
+/// minimum times the module, and so on; 1000 or more for problems that have
+/// no measure). Used to search for working values. (A gear set whose
+/// smallest gear would need more than 400 teeth counts as not building.)
+pub fn badness(o: &Options) -> f64 {
+    const HARD: f64 = 1000.0;
+    let degrees = PI / 180.0;
+    let whole_or = |v: f64| if v.fract() == 0.0 && v >= 0.0 { Some(v as usize) } else { None };
+    // The gear set's own measurable problems first.
+    let m = o.module;
+    let (pitch, alpha) = (m * PI, o.pressure_angle * degrees);
+    let height = o.height.unwrap_or(2.0 * m);
+    let mut v = 0.0;
+    let backlash = if o.kind == "bevel" { o.backlash_inner.or(o.backlash_outer).unwrap_or(0.0) } else { o.backlash };
+    if m > 0.0 && backlash >= pitch / 2.0 {
+        v += backlash - pitch / 2.0 + 0.01;
+    }
+    if m > 0.0 && alpha > 0.0 && height > 0.0 && height / alpha.sin() < pitch * alpha.cos() {
+        v += pitch * alpha.cos() - height / alpha.sin();
+    }
+    if v > 0.0 {
+        return 100.0 + v;
+    }
+    let Ok((s, at_toe, eb, et)) = gear_set(o, true) else { return HARD };
+    if !(o.width > 0.0) && o.kind != "bevel" || eb < 0.0 || et < 0.0 || (o.hand != 1 && o.hand != -1) {
+        return HARD;
+    }
+    let ends = eb > 0.0 || et > 0.0;
+    let short = |teeth: usize, min: usize| (min.saturating_sub(teeth)) as f64 * m;
+    // bore (radius) against the flat face a spur gear's ends leave
+    let bore_over = |teeth: usize, bore: f64| {
+        let z = EndZones::new(&s, teeth, o.width, eb, et, o.hand, false);
+        let limit = if ends { z.r_fold } else { z.r_root };
+        (bore / 2.0 - (limit - 2.0 * s.ds)).max(0.0)
+    };
+    let rim_under = |teeth: usize| {
+        let z = EndZones::new(&s, teeth, o.width, eb, et, o.hand, true);
+        let limit = if ends { z.r_fold } else { z.r_root };
+        ((limit + 2.0 * s.ds) - o.rim / 2.0).max(0.0)
+    };
+    match o.kind.as_str() {
+        "spur" => {
+            let Some(z) = whole_or(o.teeth) else { return HARD };
+            let z = z.max(3);
+            short(z, s.min_spur_teeth) + bore_over(z, o.bore)
+        }
+        "ring" => {
+            let Some(z) = whole_or(o.ring_teeth) else { return HARD };
+            short(z, s.min_ring_teeth) + rim_under(z.max(3))
+        }
+        "planetary" => {
+            let (Some(zs), Some(zp), Some(n)) = (whole_or(o.sun_teeth), whole_or(o.planet_teeth), whole_or(o.planets)) else {
+                return HARD;
+            };
+            if n < 1 {
+                return HARD;
+            }
+            let (zs, zp) = (zs.max(3), zp.max(3));
+            let zr = zs + 2 * zp;
+            let mut v = short(zs, s.min_spur_teeth) + short(zp, s.min_spur_teeth) + short(zr, s.min_ring_teeth);
+            let off = (zs + zr) % n;
+            v += off.min(n - off) as f64 * m;
+            if n > 1 {
+                let a = s.pitch_radius(zs) + s.pitch_radius(zp);
+                let gap = 2.0 * a * (PI / n as f64).sin() - 2.0 * (s.pitch_radius(zp) + s.height / 2.0);
+                v += (s.clearance - gap).max(0.0);
+            }
+            v + bore_over(zs, o.bore) + bore_over(zp, o.planet_bore) + rim_under(zr)
+        }
+        "bevel" => {
+            let (Some(z1), Some(z2)) = (whole_or(o.teeth), whole_or(o.teeth2)) else { return HARD };
+            let Ok(pair) = BevelPair::checked(&s, [z1, z2], o.shaft_angle * degrees, o.face_width, at_toe) else {
+                return HARD;
+            };
+            let toe = pair.r_cone - pair.face;
+            let mut v = 0.0;
+            for (i, bore) in [o.bore, o.bore2].into_iter().enumerate() {
+                let g = &pair.gears[i];
+                let fold = g.root - 0.25 * s.module() / pair.r_cone;
+                v += (bore / 2.0 - (toe * fold.sin() - 2.0 * s.ds)).max(0.0) * (bore > 0.0) as i32 as f64;
+            }
+            v
+        }
+        _ => HARD,
+    }
+}
+
+/// badness() for the page (see web/worker.js's search).
+#[wasm_bindgen]
+pub fn assess(options: JsValue) -> f64 {
+    match serde_wasm_bindgen::from_value::<Options>(options) {
+        Ok(o) => badness(&o),
+        Err(_) => 1e9,
+    }
+}
+
+/// Build the meshes for the page's options (shared by the WebAssembly entry
+/// point and the tests).
+pub fn build_parts(o: &Options) -> Result<(Vec<IndexedMesh>, Info), GearError> {
+    let degrees = PI / 180.0;
+    let (s, at_toe, end_bottom, end_top) = gear_set(o, false)?;
     let parts = match o.kind.as_str() {
         "spur" => vec![spur_gear_mesh(&s, whole(o.teeth, "Teeth")?, o.width, o.bore, o.hand, end_bottom, end_top)?],
         "ring" => vec![ring_gear_mesh(&s, whole(o.ring_teeth, "Teeth")?, o.width, o.rim, o.hand, end_bottom, end_top)?],

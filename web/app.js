@@ -141,10 +141,208 @@ function chamferHelp(where) {
     `Leave blank for a 45° slope: tooth height + root gap + module ÷ 4${now(toothHeight() + rootGap() + module / 4)}. 0 for a flat end.`;
 }
 
+// Slider ranges [min, max, step] for every number field. Click a slider's
+// end to change them; changes are remembered in this browser.
+const RANGES = {
+  module: [0.5, 5, 0.25], pressure_angle: [10, 35, 0.5], helix_angle: [0, 45, 1], height: [0.5, 10, 0.1],
+  backlash: [0, 1, 0.05], clearance: [0, 2, 0.05], fillet_radius: [0, 3, 0.05],
+  teeth: [6, 100, 1], ring_teeth: [20, 200, 1], teeth2: [6, 100, 1], shaft_angle: [10, 170, 1],
+  sun_teeth: [6, 60, 1], planet_teeth: [6, 60, 1], planets: [1, 12, 1],
+  face_width: [2, 50, 0.5], width: [2, 100, 1], bore: [0, 50, 0.5], bore2: [0, 50, 0.5], planet_bore: [0, 30, 0.5],
+  backlash_inner: [0, 1, 0.05], backlash_outer: [0, 1, 0.05], rim: [20, 300, 1],
+  end_bottom: [0, 15, 0.25], end_top: [0, 15, 0.25],
+  max_deviation: [0.001, 0.1, 0.001], ds: [0.01, 0.5, 0.01], fillet_deviation: [0.005, 0.2, 0.005],
+};
+// Typing a value past a slider's end moves that end out to it (as in
+// Desmos), but never past what the value can be at all: a pressure angle is
+// at most 45°, angles and lengths can't be negative. A value beyond that
+// stays in the box (and shows its error); the slider stops at the limit.
+const LIMITS = { pressure_angle: [0, 45], helix_angle: [0, 89] };
+function extendRange(name) {
+  const s = sliders[name];
+  const v = num(name, NaN);
+  if (!s || !Number.isFinite(v)) return;
+  const [lo, hi] = LIMITS[name] || [0, Infinity];
+  let [min, max, step] = s.r;
+  if (v > max) max = Math.max(max, Math.min(v, hi));
+  if (v < min) min = Math.min(min, Math.max(v, lo));
+  if (min !== s.r[0] || max !== s.r[1]) s.apply([min, max, step], true);
+}
+
+// What a blank auto field currently means (its slider shows it, faded).
+const chamfer45 = () => toothHeight() + rootGap() + num("module", NaN) / 4;
+const AUTO = {
+  height: () => toothHeight(),
+  clearance: () => rootGap(),
+  fillet_radius: () => rootGap() / (1 - Math.sin(num("pressure_angle", NaN) * Math.PI / 180)),
+  backlash_inner: () => num("backlash_outer", NaN) * bevelToe(),
+  backlash_outer: () => num("backlash_inner", NaN) / bevelToe(),
+  end_bottom: chamfer45,
+  end_top: chamfer45,
+  fillet_deviation: () => Math.max(0.05, num("max_deviation", NaN)),
+};
+const sliders = {};
+
+function savedRange(name) {
+  try {
+    const r = JSON.parse(localStorage.getItem("range:" + name));
+    if (Array.isArray(r) && r.length === 3 && r.every(Number.isFinite)) return r;
+  } catch {}
+  return RANGES[name];
+}
+
+function decimals(step) {
+  const text = String(step);
+  return text.includes("e-") ? Number(text.split("e-")[1]) : (text.split(".")[1] || "").length;
+}
+
+function buildSlider(f, input, row) {
+  const wrap = document.createElement("div");
+  wrap.className = "slider";
+  const lo = document.createElement("button"), hi = document.createElement("button");
+  lo.type = hi.type = "button";
+  lo.className = "lim lo";
+  hi.className = "lim hi";
+  lo.title = hi.title = "Change the slider's range and step";
+  const track = document.createElement("span");
+  track.className = "track";
+  const ticks = document.createElement("span");
+  ticks.className = "ticks";
+  const range = document.createElement("input");
+  range.type = "range";
+  range.setAttribute("aria-label", f.label + " slider");
+  track.append(ticks, range);
+  wrap.append(lo, track, hi);
+
+  // the editor: [min] ≤ label ≤ [max]  step [step]
+  const editor = document.createElement("div");
+  editor.className = "limits";
+  editor.hidden = true;
+  const box = (title) => {
+    const b = document.createElement("input");
+    b.type = "text";
+    b.inputMode = "decimal";
+    b.setAttribute("aria-label", title);
+    return b;
+  };
+  const [eMin, eMax, eStep] = [box("Slider minimum"), box("Slider maximum"), box("Slider step")];
+  const reset = document.createElement("button");
+  reset.type = "button";
+  reset.textContent = "Reset";
+  const text = (t) => Object.assign(document.createElement("span"), { textContent: t });
+  editor.append(eMin, text("≤ " + f.label + " ≤"), eMax, text("step"), eStep, reset);
+
+  const s = { range, wrap, lo, hi, ticks, editor, eMin, eMax, eStep, field: f, input };
+  sliders[f.name] = s;
+
+  const apply = (r, save) => {
+    const [min, max, step] = r;
+    s.r = r;
+    range.min = min;
+    range.max = max;
+    range.step = step;
+    lo.textContent = String(min);
+    hi.textContent = String(max);
+    eMin.value = min;
+    eMax.value = max;
+    eStep.value = step;
+    const n = (max - min) / step;
+    ticks.style.background = n <= 40
+      ? `radial-gradient(circle, var(--muted) 1.2px, transparent 1.6px) 0 50% / calc(100% / ${n}) 100% repeat-x`
+      : "none";
+    ticks.style.width = "";
+    if (save) {
+      try { localStorage.setItem("range:" + f.name, JSON.stringify(r)); } catch {}
+    }
+    syncSlider(f.name);
+  };
+  s.apply = apply;
+  apply(savedRange(f.name), false);
+
+  const open = (focus) => {
+    editor.hidden = false;
+    focus.focus();
+    focus.select();
+  };
+  lo.addEventListener("click", () => open(eMin));
+  hi.addEventListener("click", () => open(eMax));
+  const fromEditor = () => {
+    const r = [eMin, eMax, eStep].map((b) => Number(b.value.trim().replace(",", ".")));
+    if (r.every(Number.isFinite) && r[0] < r[1] && r[2] > 0) apply(r, true);
+  };
+  for (const b of [eMin, eMax, eStep]) {
+    b.addEventListener("input", (e) => { e.stopPropagation(); fromEditor(); });
+    b.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); editor.hidden = true; } });
+  }
+  reset.addEventListener("click", () => {
+    try { localStorage.removeItem("range:" + f.name); } catch {}
+    apply(RANGES[f.name], false);
+  });
+  editor.addEventListener("focusout", (e) => {
+    if (!editor.contains(e.relatedTarget) && e.relatedTarget !== lo && e.relatedTarget !== hi) editor.hidden = true;
+  });
+
+  range.addEventListener("input", (e) => {
+    e.stopPropagation();
+    input.value = String(+Number(range.value).toFixed(decimals(s.r[2])));
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  return { wrap, editor };
+}
+
+// Put a slider's thumb at its field's value (or its auto value, faded).
+function syncSlider(name) {
+  const s = sliders[name];
+  if (!s) return;
+  const isBlank = s.input.value.trim() === "";
+  const value = isBlank ? (AUTO[name] ? AUTO[name]() : NaN) : num(name, NaN);
+  s.wrap.classList.toggle("auto", isBlank);
+  s.range.disabled = isBlank && !!s.field.optional;
+  if (s.field.optional) s.input.placeholder = Number.isFinite(value) ? String(+value.toFixed(3)) : "";
+  if (Number.isFinite(value)) s.range.value = String(Math.min(s.r[1], Math.max(s.r[0], value)));
+}
+
+// Put a field's unit right after its number (or after the placeholder);
+// hide it when the number fills the box.
+const measure = document.createElement("canvas").getContext("2d");
+function placeUnit(name) {
+  const entry = rows[name];
+  const input = inputs[name];
+  const unit = entry && entry.unit;
+  if (!unit) return;
+  const style = getComputedStyle(input);
+  measure.font = style.font;
+  const text = input.value || input.placeholder || "";
+  const left = parseFloat(style.paddingLeft) + parseFloat(style.borderLeftWidth) + measure.measureText(text).width + 4;
+  unit.style.left = left + "px";
+  unit.hidden = left + unit.offsetWidth > input.clientWidth;
+}
+
+// Bevel backlash: one end is set, the other auto.
+const AUTO_PARTNER = { backlash_inner: "backlash_outer", backlash_outer: "backlash_inner" };
+
+// Turn a field's auto checkbox on (blank: the automatic value) or off (the
+// current automatic value filled in, ready to change).
+function setAuto(name, on, fire = true) {
+  const input = inputs[name], s = sliders[name];
+  rows[name].auto.checked = on;
+  input.disabled = on;
+  if (on) {
+    input.value = "";
+  } else if (input.value.trim() === "") {
+    const v = AUTO[name] ? AUTO[name]() : NaN;
+    input.value = Number.isFinite(v) ? String(+v.toFixed(s ? decimals(s.r[2]) : 3)) : "";
+  }
+  if (!on && AUTO_PARTNER[name]) setAuto(AUTO_PARTNER[name], true, false);
+  if (fire) input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
 const form = document.getElementById("options");
 const generate = document.getElementById("generate");
 const download = document.getElementById("download");
 const statusLine = document.getElementById("status");
+const errorBox = document.getElementById("error");
+const restoreButton = document.getElementById("restore");
 const canvas = document.getElementById("canvas");
 const inputs = {};
 const rows = {};
@@ -178,8 +376,10 @@ function helpMark() {
   return mark;
 }
 
+// One line per option: name, slider, value, "auto" (optional values) and
+// "set" (numbers; shown after an error, for Search).
 function buildField(f) {
-  const row = document.createElement("label");
+  const row = document.createElement("div");
   row.className = "field";
   const name = document.createElement("span");
   name.className = "name";
@@ -191,17 +391,18 @@ function buildField(f) {
   if (f.select) {
     input = document.createElement("select");
     for (const [value, text] of f.select) input.append(new Option(text, value, false, value === f.value));
+    row.classList.add("select-row");
   } else {
     input = document.createElement("input");
     input.type = "text";
     input.inputMode = f.whole ? "numeric" : "decimal";
     input.value = f.value ?? "";
-    if (f.optional) input.placeholder = f.optional;
     if (f.unit) {
       const unit = document.createElement("span");
       unit.className = "unit";
       unit.textContent = f.unit;
       box.append(unit);
+      box.unitSpan = unit;
     } else {
       input.classList.add("unitless");
     }
@@ -211,17 +412,66 @@ function buildField(f) {
   box.prepend(input);
   const tip = document.createElement("span");
   tip.className = "tip";
-  tip.textContent = f.help;
-  row.append(name, box, tip);
+  tip.textContent = typeof f.help === "function" ? "" : f.help;
   inputs[f.name] = input;
-  rows[f.name] = { row, name, tip, field: f };
-  if (typeof f.help === "function") tip.textContent = "";
+  const entry = { row, name, tip, field: f, unit: box.unitSpan };
+  rows[f.name] = entry;
+
+  // A small toggle button ("auto", "set") with a checked property and a
+  // change event, like a checkbox.
+  const check = (cls, text, title) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "toggle " + cls;
+    b.textContent = text;
+    b.title = title;
+    b.setAttribute("aria-pressed", "false");
+    Object.defineProperty(b, "checked", {
+      get: () => b.getAttribute("aria-pressed") === "true",
+      set: (v) => b.setAttribute("aria-pressed", v ? "true" : "false"),
+    });
+    b.addEventListener("click", () => {
+      b.checked = !b.checked;
+      b.dispatchEvent(new Event("change"));
+    });
+    return [b, b];
+  };
+  const parts = [name];
+  let editor = null;
+  if (!f.select && RANGES[f.name]) {
+    const sl = buildSlider(f, input, row);
+    parts.push(sl.wrap);
+    editor = sl.editor;
+  }
+  parts.push(box);
+  if (f.optional) {
+    const [label, c] = check("auto-box", "auto", "Use the automatic value (see the ? for what it is now)");
+    entry.auto = c;
+    c.checked = input.value.trim() === "";
+    input.disabled = c.checked;
+    c.addEventListener("change", (e) => { e.stopPropagation(); setAuto(f.name, c.checked); });
+    parts.push(label);
+  } else {
+    parts.push(Object.assign(document.createElement("span"), { className: "auto-cell" }));
+  }
+  if (!f.select && RANGES[f.name]) {
+    const [label, c] = check("set-box", "set", "Keep this value when finding values that work");
+    entry.set = c;
+    c.addEventListener("change", (e) => e.stopPropagation());
+    parts.push(label);
+  } else {
+    parts.push(Object.assign(document.createElement("span"), { className: "set-cell" }));
+  }
+  row.append(...parts, tip);
+  if (editor) row.append(editor);
   return row;
 }
 
 buildForm();
 
 function showFieldsFor(kind) {
+  for (const name in sliders) syncSlider(name);
+  requestAnimationFrame(() => { for (const name in rows) placeUnit(name); });
   for (const { row, name, tip, field } of Object.values(rows)) {
     if (field.helps) tip.textContent = field.helps[kind] ?? field.help;
     if (typeof field.help === "function") tip.textContent = field.help();
@@ -270,9 +520,17 @@ function readOptions() {
   return errors.length ? { errors } : { params };
 }
 
+// Errors go in their own box above the buttons (always in view); a
+// successful build clears it and shows its summary below them.
 function setStatus(text, isError = false) {
-  statusLine.textContent = text;
-  statusLine.classList.toggle("error", isError);
+  errorBox.hidden = !isError;
+  form.classList.toggle("show-set", isError);
+  if (isError) {
+    errorBox.textContent = text;
+    statusLine.textContent = searching ? "" : "Click Search to look for values that work. Values marked \"set\" stay as they are.";
+  } else {
+    statusLine.textContent = text;
+  }
 }
 
 // ------------------------------------------------------------------- viewer
@@ -303,6 +561,8 @@ function resize() {
   camera.updateProjectionMatrix();
 }
 new ResizeObserver(resize).observe(canvas.parentElement);
+// Boxes change width with the column: re-place their units.
+new ResizeObserver(() => { for (const name in rows) placeUnit(name); }).observe(document.getElementById("fields"));
 resize();
 
 (function animate() {
@@ -389,11 +649,17 @@ let current = null; // { parts, kind }
 let startedAt = 0;
 
 function setButton(state) {
-  generate.classList.toggle("state", state !== "manual");
+  // After a gear error the button offers to find values that work (see search.js).
+  if (state === "failed" && !searching) state = "find";
+  generate.dataset.state = state;
+  generate.classList.toggle("state", !["manual", "find", "searching"].includes(state));
   generate.classList.toggle("done", state === "done");
   generate.classList.toggle("failed", state === "failed" || state === "stale");
-  generate.disabled = state !== "manual";
-  generate.textContent = { loading: "Loading…", building: "Generating…", done: "✓ Generated", failed: "✗ Not generated", stale: "✗ Not generated", manual: "Generate" }[state];
+  generate.disabled = !["manual", "find", "searching"].includes(state);
+  generate.textContent = {
+    loading: "Loading…", building: "Generating…", done: "✓ Generated", failed: "✗ Not generated",
+    stale: "✗ Not generated", manual: "Generate", find: "Search", searching: "Searching… (stop)",
+  }[state];
 }
 
 function requestBuild() {
@@ -430,6 +696,14 @@ function finished(seconds, failed = false) {
 
 let typingTimer = null;
 form.addEventListener("input", (event) => {
+  if (!restoring) recordSoon();
+  restoreButton.hidden = true;
+  if (event.isTrusted && sliders[event.target.name] && event.target.type === "text") extendRange(event.target.name);
+  if (event.target.classList && event.target.classList.contains("changed")) {
+    event.target.classList.remove("changed");
+    event.target.title = "";
+  }
+  if (searching) stopSearch();
   showFieldsFor(inputs.kind.value); // labels and help depend on the values
   if (!auto) {
     setButton("manual");
@@ -439,12 +713,183 @@ form.addEventListener("input", (event) => {
   typingTimer = setTimeout(requestBuild, event.target.tagName === "SELECT" ? 0 : 300);
 });
 
-form.addEventListener("submit", (event) => {
-  event.preventDefault();
+// ---------------------------------------------------------------- history
+//
+// Ctrl+Z / Ctrl+Shift+Z (or Ctrl+Y) step through earlier settings: every
+// value, auto toggle and choice. Typing is grouped into one step after a
+// short pause. Inside a text box, Ctrl+Z first undoes typing in that box
+// (the browser's own undo), then, once there's nothing left to undo there,
+// the settings.
+
+const history = [];
+let historyAt = -1;
+let historyTimer = null;
+let restoring = false;
+let beforeSearch = -1; // history entry from before the last search, for the Restore button
+
+function snapshot() {
+  const state = {};
+  for (const [name, input] of Object.entries(inputs)) {
+    state[name] = [input.value, rows[name].auto ? rows[name].auto.checked : null];
+  }
+  return state;
+}
+
+function record() {
+  clearTimeout(historyTimer);
+  historyTimer = null;
+  const now = snapshot();
+  if (historyAt >= 0 && JSON.stringify(history[historyAt]) === JSON.stringify(now)) return;
+  history.splice(historyAt + 1);
+  history.push(now);
+  if (history.length > 200) history.shift();
+  historyAt = history.length - 1;
+}
+
+function recordSoon() {
+  clearTimeout(historyTimer);
+  historyTimer = setTimeout(record, 600);
+}
+
+function restore(state) {
+  restoreButton.hidden = true;
+  restoring = true;
+  for (const [name, [value, auto]] of Object.entries(state)) {
+    const input = inputs[name];
+    input.value = value;
+    if (auto !== null) {
+      rows[name].auto.checked = auto;
+      input.disabled = auto;
+    }
+    input.classList.remove("changed", "invalid");
+    input.title = "";
+  }
+  restoring = false;
+  if (searching) stopSearch();
+  showFieldsFor(inputs.kind.value);
   requestBuild();
+}
+
+function step(by) {
+  if (historyTimer) record(); // keep the typing that hasn't been recorded yet
+  const to = historyAt + by;
+  if (to < 0 || to >= history.length) return;
+  historyAt = to;
+  restore(history[to]);
+}
+
+restoreButton.addEventListener("click", () => {
+  if (historyTimer) record();
+  if (beforeSearch < 0 || beforeSearch >= history.length) return;
+  historyAt = beforeSearch;
+  restore(history[beforeSearch]);
 });
 
+document.addEventListener("keydown", (event) => {
+  if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+  const key = event.key.toLowerCase();
+  const redo = (key === "z" && event.shiftKey) || key === "y";
+  if (key !== "z" && !redo) return;
+  // in a text box with its own typing to undo, let the browser do that
+  const t = event.target;
+  if (t && t.tagName === "INPUT" && t.type === "text" && !redo && historyTimer) return;
+  event.preventDefault();
+  step(redo ? 1 : -1);
+});
+
+form.addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (generate.dataset.state === "find") startSearch();
+  else if (generate.dataset.state === "searching") stopSearch("Stopped searching.");
+  else requestBuild();
+});
+
+// ----------------------------------------------------------------- search
+//
+// The numbers not marked "set" (and shown for this gear type) may change,
+// within their sliders' ranges and steps; search.js finds the nearest
+// combination that builds, and the page fills it in.
+
+var searching = false; // var: setButton reads it before this line runs
+let searchWorker = null;
+let searchId = 0;
+
+function startSearch() {
+  restoreButton.hidden = true;
+  for (const input of form.querySelectorAll("input.changed")) {
+    input.classList.remove("changed");
+    input.title = "";
+  }
+  const read = readOptions();
+  if (read.errors) return;
+  const kind = inputs.kind.value;
+  const free = [];
+  for (const [name, s] of Object.entries(sliders)) {
+    const entry = rows[name];
+    if (entry.row.hidden || entry.set.checked) continue;
+    const blank = inputs[name].value.trim() === "";
+    const value = blank ? (AUTO[name] ? AUTO[name]() : NaN) : num(name, NaN);
+    if (!Number.isFinite(value)) continue;
+    // the bevel backlash end left on auto stays auto
+    if (AUTO_PARTNER[name] && blank) continue;
+    free.push({ name, value, min: s.r[0], max: s.r[1], step: s.r[2], label: (entry.field.labels && entry.field.labels[kind]) || entry.field.label, blank });
+  }
+  if (!free.length) {
+    setStatus("Every value is set: clear some \"set\" boxes so they can change.", true);
+    return;
+  }
+  searching = true;
+  searchId += 1;
+  if (!searchWorker) searchWorker = new Worker("search.js", { type: "module" });
+  searchWorker.onmessage = (event) => onSearch(event.data, free);
+  searchWorker.postMessage({ id: searchId, params: read.params, free: free.map(({ name, value, min, max, step }) => ({ name, value, min, max, step })) });
+  setButton("searching");
+}
+
+function stopSearch(message) {
+  if (searchWorker) searchWorker.terminate();
+  searchWorker = null;
+  searching = false;
+  setButton("failed");
+  if (message) statusLine.textContent = message;
+}
+
+function onSearch(msg, free) {
+  if (msg.id !== searchId) return;
+  if (msg.type === "progress") {
+    generate.textContent = `Searching… ${msg.evals.toLocaleString()} tried (stop)`;
+    return;
+  }
+  searching = false;
+  if (!msg.found) {
+    setButton("failed");
+    statusLine.textContent = `No working values found by changing the values that aren't set (${msg.evals.toLocaleString()} tried, ` +
+      "within the sliders' ranges). Clear more \"set\" boxes, or widen a slider's range (click its ends).";
+    return;
+  }
+  record(); // so Ctrl+Z comes back to the values before the search
+  beforeSearch = historyAt;
+  let changed = 0;
+  msg.values.forEach((v, i) => {
+    const f = free[i];
+    if (Math.abs(v - f.value) < 1e-9) return;
+    if (rows[f.name].auto && rows[f.name].auto.checked) setAuto(f.name, false, false);
+    const input = inputs[f.name];
+    input.value = String(v);
+    input.classList.add("changed");
+    input.title = `Changed by Search: was ${f.blank ? "auto (" + +f.value.toFixed(3) + ")" : +f.value.toFixed(3)} (Ctrl+Z to undo)`;
+    changed++;
+  });
+  record();
+  restoreButton.hidden = !changed;
+  const first = form.querySelector("input.changed");
+  if (first) first.scrollIntoView({ block: "nearest" });
+  showFieldsFor(inputs.kind.value);
+  requestBuild();
+}
+
 showFieldsFor(inputs.kind.value);
+record(); // the starting settings, for Ctrl+Z
 setButton("loading");
 setStatus("Loading…");
 
@@ -473,8 +918,7 @@ worker.onmessage = (event) => {
   const i = msg.info;
   setStatus(
     `${i.triangles.toLocaleString()} triangles, built in ${seconds.toFixed(2)} s.` +
-    (kind === "bevel" ? "" : `\nFewest teeth this gear set allows: ${i.min_spur_teeth} on a spur gear, sun or planet; ` +
-    `${i.min_ring_teeth} on a ring gear.`) +
+    (kind === "bevel" ? "" : `\nFewest teeth this gear set allows:\n${i.min_spur_teeth} on a spur gear, ${i.min_ring_teeth} on a ring gear`) +
     (seconds > AUTO_LIMIT ? "\nThat took a while, so changes now wait for Generate." : "")
   );
   finished(seconds);
@@ -497,7 +941,7 @@ download.addEventListener("click", () => {
 
 const layout = document.querySelector(".layout");
 const resizer = document.getElementById("resizer");
-const MIN_OPTIONS = 260;
+const MIN_OPTIONS = 300; // narrow columns switch options to two lines
 
 function setOptionsWidth(width) {
   const max = Math.max(MIN_OPTIONS, window.innerWidth - 240);

@@ -25,7 +25,7 @@ html, body {
 
 .layout {
   display: grid;
-  grid-template-columns: var(--options-width, 340px) 6px 1fr;
+  grid-template-columns: var(--options-width, 620px) 6px 1fr;
   height: 100vh;
 }
 
@@ -46,22 +46,70 @@ fieldset {
 
 legend { color: var(--muted); padding: 0 4px; }
 
+/* One line per option when the column is wide enough: name, slider, auto,
+   value, set. In a narrower column, two lines: name, auto, value and set on
+   top, the slider underneath (see the container query below). */
+.options { container-type: inline-size; }
 .field {
   position: relative;
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(70px, 150px) minmax(60px, 1fr) 44px clamp(56px, 22cqw, 108px) var(--set-column, 0px);
+  grid-template-areas: "name slider auto value set" "editor editor editor editor editor";
   align-items: center;
-  gap: 8px;
-  margin: 0 0 8px;
+  column-gap: 8px;
+  margin: 0 0 6px;
 }
+.field > .name { grid-area: name; }
+.field > .slider { grid-area: slider; }
+.field > .input { grid-area: value; }
+.field > .auto-box, .field > .auto-cell { grid-area: auto; }
+.field > .set-box, .field > .set-cell { grid-area: set; }
+.field > .limits { grid-area: editor; }
+.select-row > .input { grid-column: slider-start / value-end; }
+@container (max-width: 560px) {
+  .field {
+    grid-template-columns: minmax(0, 1fr) 44px clamp(56px, 24cqw, 108px) var(--set-column, 0px);
+    grid-template-areas: "name auto value set" "slider slider slider slider";
+    /* the same space above the slider as below it, to the next option */
+    row-gap: 8px;
+    margin-bottom: 8px;
+  }
+  .field > .limits { grid-area: auto; grid-column: 1 / -1; }
+  .select-row > .input { grid-column: auto-start / value-end; }
+}
+/* Very narrow: tighter toggles. */
+@container (max-width: 380px) {
+  .field { grid-template-columns: minmax(0, 1fr) 36px clamp(56px, 24cqw, 108px) var(--set-column, 0px); column-gap: 5px; }
+  .options.show-set { --set-column: 30px; }
+  .field button.toggle { padding: 1px 4px; font-size: 10px; }
+}
+.options.show-set { --set-column: 40px; }
+.field button.set-box { display: none; }
+.options.show-set .field button.set-box { display: inline-block; }
+/* "auto" and "set": small toggle buttons. */
+.field button.toggle {
+  flex: none;
+  justify-self: start;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 16px;
+  cursor: pointer;
+}
+.field button.toggle:hover { color: var(--text); border-color: var(--muted); }
+.field button.toggle[aria-pressed="true"] { background: rgba(138, 180, 248, 0.18); border-color: var(--accent); color: var(--accent); }
 
 .field[hidden] { display: none; }
 
 .field .name { flex: 1; }
 
-/* The "?" after a name; the whole row shows the explanation on hover or focus. */
+/* The "?" after a name, centered on the text (not sitting on its baseline). */
 .help-mark {
   display: inline-block;
+  vertical-align: middle;
   margin-left: 4px;
   width: 14px;
   height: 14px;
@@ -98,11 +146,7 @@ fieldset:has(> legend .help-mark:hover) > .legend-tip { display: block; }
 fieldset { position: relative; }
 .legend-tip { top: 14px; }
 
-.input {
-  position: relative;
-  flex: none;
-  width: 116px;
-}
+.input { position: relative; }
 
 .input input, .input select {
   width: 100%;
@@ -114,13 +158,14 @@ fieldset { position: relative; }
   font: inherit;
 }
 
-.input input { padding-right: 34px; }
+.input input { padding-right: 6px; min-width: 0; }
 .input input.unitless { padding-right: 6px; }
-.input:has(select) { width: 150px; }
+.input input:disabled { color: var(--muted); background: transparent; }
 
+/* The unit follows the number (placed by placeUnit in app.js). */
 .unit {
   position: absolute;
-  right: 8px;
+  left: 0;
   top: 50%;
   transform: translateY(-50%);
   color: var(--muted);
@@ -156,8 +201,80 @@ button#download { background: transparent; color: var(--accent); }
 button:disabled { cursor: default; }
 button#download:disabled { opacity: 0.5; }
 
-.status { color: var(--muted); min-height: 3em; white-space: pre-line; }
-.status.error { color: var(--error); }
+.status { color: var(--muted); min-height: 3em; white-space: pre-line; margin: 8px 0 0; }
+
+/* Buttons, errors and the summary stay in view at the bottom of the options. */
+.dock {
+  position: sticky;
+  bottom: -16px;
+  margin: 0 -16px -16px;
+  padding: 10px 16px 12px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+}
+.error-box {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--error);
+  border-radius: 6px;
+  background: rgba(242, 139, 130, 0.12);
+  color: var(--error);
+  white-space: pre-line;
+}
+
+/* Sliders under the number fields; click a limit to change min, max, step. */
+.slider { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.slider .track { position: relative; flex: 1; display: flex; }
+.slider .ticks {
+  position: absolute;
+  left: 7px;
+  right: 7px;
+  top: 50%;
+  height: 4px;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+.slider input[type="range"] { flex: 1; margin: 0; accent-color: var(--accent); background: transparent; }
+.slider.auto input[type="range"] { opacity: 0.45; }
+.slider button.lim {
+  flex: none;
+  min-width: 2.5em;
+  padding: 0 2px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.slider button.lim:hover { color: var(--text); text-decoration: underline; }
+.slider button.lim.hi { text-align: right; }
+.limits {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  margin: 4px 0 2px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.limits[hidden] { display: none; }
+.limits input {
+  width: 52px;
+  padding: 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--field);
+  color: var(--text);
+  font: inherit;
+}
+.limits button {
+  flex: none;
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--muted);
+  font-size: 12px;
+}
 
 .viewer { position: relative; background: #26292e; min-height: 300px; }
 
@@ -185,9 +302,27 @@ canvas { display: block; width: 100%; height: 100%; }
 .resizer:hover, .resizer.dragging { background: var(--accent); }
 body.resizing { cursor: col-resize; user-select: none; }
 
-@media (max-width: 720px) {
+/* Narrow screens: the preview sticks to the top, the buttons and errors to
+   the bottom, and the options scroll in between. */
+@media (max-width: 1000px) {
   .resizer { display: none; }
-  .layout { grid-template-columns: 1fr !important; grid-template-rows: auto 60vh; height: auto; }
-  .options { border-right: none; border-bottom: 1px solid var(--border); }
-  .viewer { height: 60vh; }
+  html, body { height: 100%; overflow: hidden; }
+  .layout { display: flex !important; flex-direction: column; height: 100dvh; }
+  .viewer { order: -1; flex: none; height: 38dvh; min-height: 200px; border-bottom: 1px solid var(--border); }
+  .options { flex: 1; min-height: 0; border-right: none; }
+  .options.show-set { --set-column: 36px; }
+}
+
+/* Values "Find values that work" changed, until edited. */
+.input input.changed { border-color: var(--ok); background: rgba(129, 201, 149, 0.14); }
+
+/* After a search: go back to the values from before it (Ctrl+Z on phones). */
+button.restore {
+  flex: none;
+  margin-top: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--accent);
+  font-size: 13px;
 }

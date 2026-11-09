@@ -522,10 +522,24 @@ pub struct GearSystem {
     pub fillet_radius: f64,
     pub min_spur_teeth: usize,
     pub min_ring_teeth: usize,
+    /// Largest tooth count searched for the minimums (MAX_TEETH, or less for
+    /// new_quick).
+    teeth_limit: usize,
 }
 
 impl GearSystem {
     pub fn new(params: &Params) -> Result<Self> {
+        Self::create(params, MAX_TEETH, true)
+    }
+
+    /// new(), but searching the minimum tooth counts only up to teeth_limit
+    /// and without working out which value to blame when none is found: fast
+    /// even for hopeless parameters (for searching parameters).
+    pub fn new_quick(params: &Params, teeth_limit: usize) -> Result<Self> {
+        Self::create(params, teeth_limit, false)
+    }
+
+    fn create(params: &Params, teeth_limit: usize, blame: bool) -> Result<Self> {
         let Params { pitch, pressure_angle, height, backlash, max_deviation, ds, helix_angle, .. } = *params;
         if !(pitch > 0.0) {
             return err("The module must be positive.");
@@ -596,6 +610,7 @@ impl GearSystem {
             fillet_radius,
             min_spur_teeth: 0,
             min_ring_teeth: 0,
+            teeth_limit,
         };
         match system.minimums() {
             Ok((spur, ring)) => {
@@ -603,7 +618,7 @@ impl GearSystem {
                 system.min_ring_teeth = ring;
                 Ok(system)
             }
-            Err(e) => Err(system.blame_spacing().unwrap_or(e)),
+            Err(e) => Err(if blame { system.blame_spacing().unwrap_or(e) } else { e }),
         }
     }
 
@@ -771,7 +786,7 @@ impl GearSystem {
     }
 
     fn find_minimum(&self, kind: &str, problem: impl Fn(&Self, usize) -> Option<&'static str>) -> Result<usize> {
-        for teeth in 3..=MAX_TEETH {
+        for teeth in 3..=self.teeth_limit {
             if problem(self, teeth).is_none() {
                 return Ok(teeth);
             }
@@ -780,8 +795,8 @@ impl GearSystem {
             "This gear set can't make {} gears with up to {} teeth: {}. Use a smaller tooth height or \
              root gap, less backlash, or a larger module.",
             kind,
-            MAX_TEETH,
-            problem(self, MAX_TEETH).unwrap_or("")
+            self.teeth_limit,
+            problem(self, self.teeth_limit).unwrap_or("")
         ))
     }
 
