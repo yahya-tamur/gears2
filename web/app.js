@@ -24,10 +24,20 @@ const SECTIONS = [
       { name: "helix_angle", label: "Helix angle", unit: "°", value: "30",
         help: () => {
           const pa = num("pressure_angle", NaN) * Math.PI / 180, ha = num("helix_angle", NaN) * Math.PI / 180;
-          const eff = Math.atan(Math.tan(pa) * Math.cos(ha)) * 180 / Math.PI;
-          const now = Number.isFinite(eff) ? ` (now ${+eff.toFixed(1)}°)` : "";
-          return "Slant of the V-shaped (herringbone) teeth; 0° is straight. More slant runs smoother but makes " +
-            `the teeth thinner and their normal pressure angle (measured square to the slanted teeth) smaller${now}.`;
+          const deg = (a) => Number.isFinite(a) ? `${+(a * 180 / Math.PI).toFixed(1)}°` : "–";
+          // The flanks' normals all lean out of the plane of rotation by the
+          // base helix angle, which is also how far they overhang.
+          const baseHelix = Math.atan(Math.tan(ha) * Math.cos(pa));
+          // Backlash is set in the plane of rotation; the faces' true distance
+          // is backlash * cos(pressure angle) * cos(base helix angle).
+          const backlash = inputs.kind.value === "bevel" ? NaN : num("backlash", NaN);
+          const gap = backlash * Math.cos(pa) * Math.cos(baseHelix);
+          return [
+            "Slant of the V-shaped (herringbone) teeth; 0° is straight.",
+            `Current normal pressure angle (measured square to the slanted teeth): ${deg(Math.atan(Math.tan(pa) * Math.cos(ha)))}`,
+            ...(Number.isFinite(gap) && gap >= 0 ? [`Current distance between tooth faces (with the other side touching): ${+gap.toFixed(3)} mm`] : []),
+            `Current overhang angle (how far the downward-facing tooth sides lean from vertical): ${deg(baseHelix)}`,
+          ].join("\n");
         } },
       { name: "height", label: "Tooth height", unit: "mm", optional: "auto",
         help: () => `How far each tooth reaches into its mate: half of it above the pitch circle (see Module), half below. The gaps go a root gap deeper. Leave blank for the standard 2 × module${now(toothHeight())}.` },

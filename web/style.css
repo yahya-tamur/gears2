@@ -140,6 +140,7 @@ legend { color: var(--muted); padding: 0 4px; }
   background: var(--tip);
   color: var(--text);
   font-size: 13px;
+  white-space: pre-line;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
 }
 
