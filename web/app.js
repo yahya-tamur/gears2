@@ -334,6 +334,16 @@ const AUTO_PARTNER = { backlash_inner: "backlash_outer", backlash_outer: "backla
 // current automatic value filled in, ready to change).
 function setAuto(name, on, fire = true) {
   const input = inputs[name], s = sliders[name];
+  const partner = AUTO_PARTNER[name];
+  // Exactly one bevel backlash end is auto: switching one on switches the
+  // other off, with the value it has now (worked out before this one clears).
+  if (on && partner && rows[partner].auto.checked) {
+    const other = inputs[partner];
+    const v = AUTO[partner]();
+    other.value = Number.isFinite(v) ? String(+v.toFixed(decimals(sliders[partner].r[2]))) : "";
+    rows[partner].auto.checked = false;
+    other.disabled = false;
+  }
   rows[name].auto.checked = on;
   input.disabled = on;
   if (on) {
@@ -342,7 +352,7 @@ function setAuto(name, on, fire = true) {
     const v = AUTO[name] ? AUTO[name]() : NaN;
     input.value = Number.isFinite(v) ? String(+v.toFixed(s ? decimals(s.r[2]) : 3)) : "";
   }
-  if (!on && AUTO_PARTNER[name]) setAuto(AUTO_PARTNER[name], true, false);
+  if (!on && partner && !rows[partner].auto.checked) setAuto(partner, true, false);
   if (fire) input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
