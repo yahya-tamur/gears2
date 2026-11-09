@@ -314,8 +314,11 @@ function placeUnit(name) {
   measure.font = style.font;
   const text = input.value || input.placeholder || "";
   const left = parseFloat(style.paddingLeft) + parseFloat(style.borderLeftWidth) + measure.measureText(text).width + 4;
+  // the unit's own width, measured from its text (a hidden unit's box is 0 wide)
+  measure.font = getComputedStyle(unit).font;
+  const width = measure.measureText(unit.textContent).width;
   unit.style.left = left + "px";
-  unit.hidden = left + unit.offsetWidth > input.clientWidth;
+  unit.hidden = left + width > input.clientWidth;
 }
 
 // Bevel backlash: one end is set, the other auto.
@@ -562,6 +565,9 @@ function resize() {
   renderer.setSize(w, h, false);
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
+  // Resizing clears the canvas: draw again now, not on the next frame, so
+  // the model doesn't blink while the column is dragged.
+  renderer.render(scene, camera);
 }
 new ResizeObserver(resize).observe(canvas.parentElement);
 // Boxes change width with the column: re-place their units.
