@@ -476,6 +476,7 @@ function buildField(f) {
   if (!f.select && RANGES[f.name]) {
     const [label, c] = check("set-box", "set", "Keep this value when finding values that work");
     entry.set = c;
+    c.checked = true; // everything starts set; clear the ones Search may change
     c.addEventListener("change", (e) => e.stopPropagation());
     parts.push(label);
   } else {
@@ -860,7 +861,7 @@ function startSearch() {
     free.push({ name, value, min: s.r[0], max: s.r[1], step: s.r[2], label: (entry.field.labels && entry.field.labels[kind]) || entry.field.label, blank });
   }
   if (!free.length) {
-    setStatus("Every value is set: clear some \"set\" boxes so they can change.", true);
+    statusLine.textContent = "Every value is set: turn \"set\" off on the values Search may change, then click Search.";
     return;
   }
   searching = true;
