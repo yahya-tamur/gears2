@@ -524,6 +524,9 @@ function readOptions() {
 // successful build clears it and shows its summary below them.
 function setStatus(text, isError = false) {
   errorBox.hidden = !isError;
+  // Only download what the current settings make (the preview may still
+  // show the last values that worked).
+  download.disabled = isError || !current;
   form.classList.toggle("show-set", isError);
   if (isError) {
     errorBox.textContent = text;
