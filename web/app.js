@@ -22,7 +22,13 @@ const SECTIONS = [
       { name: "pressure_angle", label: "Pressure angle", unit: "°", value: "20",
         help: "Slope of the tooth sides at the pitch circle (see Module). 20° is standard. Larger angles give stronger but more pointed teeth, which push the gears apart harder." },
       { name: "helix_angle", label: "Helix angle", unit: "°", value: "30",
-        help: "The teeth are herringbone: V-shaped, slanting one way in one half of the gear and back in the other. This is the angle of that slant from straight across. 0° gives straight teeth. Slanted teeth run smoother and quieter, and the V cancels the sideways push a single slant would make." },
+        help: () => {
+          const pa = num("pressure_angle", NaN) * Math.PI / 180, ha = num("helix_angle", NaN) * Math.PI / 180;
+          const eff = Math.atan(Math.tan(pa) * Math.cos(ha)) * 180 / Math.PI;
+          const now = Number.isFinite(eff) ? ` (now ${+eff.toFixed(1)}°)` : "";
+          return "Slant of the V-shaped (herringbone) teeth; 0° is straight. More slant runs smoother but makes " +
+            `the teeth thinner and their normal pressure angle (measured square to the slanted teeth) smaller${now}.`;
+        } },
       { name: "height", label: "Tooth height", unit: "mm", optional: "auto",
         help: () => `How far each tooth reaches into its mate: half of it above the pitch circle (see Module), half below. The gaps go a root gap deeper. Leave blank for the standard 2 × module${now(toothHeight())}.` },
       { name: "backlash", label: "Backlash", unit: "mm", value: "0.2", kinds: ["spur", "ring", "planetary"],
