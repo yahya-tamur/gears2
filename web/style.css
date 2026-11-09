@@ -15,6 +15,11 @@
 
 * { box-sizing: border-box; }
 
+/* Only what's typed in the boxes and the messages under the buttons (summary,
+   errors) can be selected; not labels or units. */
+body { -webkit-user-select: none; user-select: none; }
+input[type="text"], .status, .error-box { -webkit-user-select: text; user-select: text; }
+
 html, body {
   margin: 0;
   height: 100%;

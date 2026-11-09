@@ -736,14 +736,14 @@ impl GearSystem {
         let r_tip = r + self.height / 2.0;
         let r_root = r - self.height / 2.0 - self.clearance;
         if r_root <= 0.0 {
-            return Some("the root circle would be at or below the center");
+            return Some("the tooth gaps would reach past the center");
         }
         let flank = Flank::new(r * self.pressure_angle.cos(), r, self.pressure_angle, (self.pitch - self.backlash) / 2.0);
         if 2.0 * flank.half_angle(r_tip) * r_tip < self.min_land {
-            return Some("the teeth would come to a point before reaching the tip circle");
+            return Some("the teeth would come to a point before reaching their full height");
         }
         if (2.0 * PI / teeth as f64 - 2.0 * flank.half_angle(r_root)) * r_root < self.min_land {
-            return Some("neighbouring teeth would meet before reaching the root circle");
+            return Some("neighbouring teeth would meet before the gaps between them reach their full depth");
         }
         // Mating tips must stay on the involute part of this gear's flank. For
         // an external mate the worst case is a rack: teeth >= z_rack. A ring is
@@ -777,10 +777,10 @@ impl GearSystem {
         }
         let flank = Flank::new(rb, r, self.pressure_angle, (self.pitch + self.backlash) / 2.0);
         if (2.0 * PI / teeth as f64 - 2.0 * flank.half_angle(r_tip)) * r_tip < self.min_land {
-            return Some("the teeth would come to a point before reaching the tip circle");
+            return Some("the teeth would come to a point before reaching their full height");
         }
         if 2.0 * flank.half_angle(r_root) * r_root < self.min_land {
-            return Some("the gaps would close before reaching the root circle");
+            return Some("the gaps between the teeth would close before reaching their full depth");
         }
         None
     }
@@ -792,10 +792,9 @@ impl GearSystem {
             }
         }
         err(format!(
-            "This gear set can't make {} gears with up to {} teeth: {}. Use a smaller tooth height or \
-             root gap, less backlash, or a larger module.",
+            "This gear set can't make {} gears with any number of teeth: {}. Use a smaller tooth height \
+             or root gap, less backlash, or a larger module.",
             kind,
-            self.teeth_limit,
             problem(self, self.teeth_limit).unwrap_or("")
         ))
     }
