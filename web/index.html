@@ -47,6 +47,14 @@
     <section class="viewer">
       <canvas id="canvas"></canvas>
       <p class="hint">Drag to rotate, scroll to zoom, right-drag to pan.</p>
+      <div class="view-controls">
+        <label class="section-row" title="Cut away the top of the model, to see inside it (only in this view, not in the STL)">
+          Section view <input type="range" id="section" min="0" max="100" step="1" value="100"> <span id="section-value">off</span>
+        </label>
+        <label class="fov" title="Field of view: how much perspective the view has. 0° looks from infinitely far away, so sizes don't change with depth.">
+          FOV <input type="range" id="fov" min="0" max="179" step="1" value="0"> <span id="fov-value">0°</span>
+        </label>
+      </div>
     </section>
   </main>
   <script type="module" src="app.js"></script>

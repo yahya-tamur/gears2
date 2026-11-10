@@ -6,7 +6,7 @@
 //! with positions as a Float32Array of x, y, z triples and indices as a
 //! Uint32Array of vertex triples.
 
-use crate::bevel::{bevel_pair_mesh, BevelPair};
+use crate::bevel::{bevel_pair_layout, BevelFrame, BevelPair};
 use crate::gears::{GearError, GearSystem, Params};
 use crate::mesh::{planetary_gear_mesh, ring_gear_mesh, spur_gear_mesh, EndZones, IndexedMesh};
 use serde::Deserialize;
@@ -61,6 +61,8 @@ pub struct Info {
     pub min_spur_teeth: usize,
     pub min_ring_teeth: usize,
     pub triangles: usize,
+    /// Each bevel gear's apex, axis and pitch cone, for the section view.
+    pub bevel_frames: Option<[BevelFrame; 2]>,
 }
 
 fn whole(value: f64, name: &str) -> Result<usize, GearError> {
@@ -204,6 +206,7 @@ pub fn assess(options: JsValue) -> f64 {
 pub fn build_parts(o: &Options) -> Result<(Vec<IndexedMesh>, Info), GearError> {
     let degrees = PI / 180.0;
     let (s, at_toe, end_bottom, end_top) = gear_set(o, false)?;
+    let mut bevel_frames = None;
     let parts = match o.kind.as_str() {
         "spur" => vec![spur_gear_mesh(&s, whole(o.teeth, "Teeth")?, o.width, o.bore, o.hand, end_bottom, end_top)?],
         "ring" => vec![ring_gear_mesh(&s, whole(o.ring_teeth, "Teeth")?, o.width, o.rim, o.hand, end_bottom, end_top)?],
@@ -220,22 +223,27 @@ pub fn build_parts(o: &Options) -> Result<(Vec<IndexedMesh>, Info), GearError> {
             end_bottom,
             end_top,
         )?,
-        "bevel" => bevel_pair_mesh(
-            &s,
-            [whole(o.teeth, "Gear 1 teeth")?, whole(o.teeth2, "Gear 2 teeth")?],
-            o.shaft_angle * degrees,
-            o.face_width,
-            [o.bore, o.bore2],
-            o.hand,
-            at_toe,
-            o.layout.as_deref() != Some("print"),
-        )?,
+        "bevel" => {
+            let (parts, frames) = bevel_pair_layout(
+                &s,
+                [whole(o.teeth, "Gear 1 teeth")?, whole(o.teeth2, "Gear 2 teeth")?],
+                o.shaft_angle * degrees,
+                o.face_width,
+                [o.bore, o.bore2],
+                o.hand,
+                at_toe,
+                o.layout.as_deref() != Some("print"),
+            )?;
+            bevel_frames = Some(frames);
+            parts
+        }
         other => return Err(GearError(format!("Unknown gear type {:?}.", other))),
     };
     let info = Info {
         min_spur_teeth: s.min_spur_teeth,
         min_ring_teeth: s.min_ring_teeth,
         triangles: parts.iter().map(|m| m.triangles.len()).sum(),
+        bevel_frames,
     };
     Ok((parts, info))
 }
@@ -273,6 +281,17 @@ pub fn build(options: JsValue) -> JsValue {
             set(&summary, "min_spur_teeth", &JsValue::from(info.min_spur_teeth as u32));
             set(&summary, "min_ring_teeth", &JsValue::from(info.min_ring_teeth as u32));
             set(&summary, "triangles", &JsValue::from(info.triangles as u32));
+            if let Some(frames) = info.bevel_frames {
+                let list = js_sys::Array::new();
+                for f in frames {
+                    let frame = js_sys::Object::new();
+                    set(&frame, "apex", &js_sys::Float64Array::from(&f.apex[..]).into());
+                    set(&frame, "axis", &js_sys::Float64Array::from(&f.axis[..]).into());
+                    set(&frame, "pitch_cone", &JsValue::from(f.pitch_cone));
+                    list.push(&frame);
+                }
+                set(&summary, "bevel_frames", &list);
+            }
             set(&result, "info", &summary);
         }
     }

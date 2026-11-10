@@ -288,13 +288,37 @@ canvas { display: block; width: 100%; height: 100%; }
 
 .hint {
   position: absolute;
-  bottom: 8px;
-  left: 12px;
+  bottom: 6px;
+  left: 8px;
   margin: 0;
-  color: var(--muted);
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(32, 33, 36, 0.8); /* readable over the model */
+  color: var(--text);
   font-size: 12px;
   pointer-events: none;
 }
+
+/* Section and field of view, at the bottom right of the 3D view. */
+.view-controls {
+  position: absolute;
+  bottom: 6px;
+  right: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(32, 33, 36, 0.8); /* readable over the model */
+  color: var(--text);
+  font-size: 12px;
+}
+.view-controls > * { display: flex; align-items: center; gap: 6px; }
+.view-controls input[type=range] { width: 110px; }
+#section-value, #fov-value { min-width: 3.5em; }
+/* No room beside the hint on narrow views: move to the top. */
+@media (max-width: 640px) { .view-controls { top: 6px; bottom: auto; } }
 
 /* Drag sideways to resize the options column. */
 .resizer {
@@ -311,10 +335,13 @@ body.resizing { cursor: col-resize; user-select: none; }
 /* Narrow screens: the preview sticks to the top, the buttons and errors to
    the bottom, and the options scroll in between. */
 @media (max-width: 1000px) {
-  .resizer { display: none; }
   html, body { height: 100%; overflow: hidden; }
   .layout { display: flex !important; flex-direction: column; height: 100dvh; }
-  .viewer { order: -1; flex: none; height: 38dvh; min-height: 200px; border-bottom: 1px solid var(--border); }
+  .viewer { order: -2; flex: none; height: var(--viewer-height, 38dvh); min-height: 120px; }
+  /* The divider under the preview drags up and down. */
+  .resizer { order: -1; flex: none; height: 1px; cursor: row-resize; }
+  .resizer::before { inset: -10px 0; }
+  body.resizing { cursor: row-resize; }
   .options { flex: 1; min-height: 0; border-right: none; }
   .options.show-set { --set-column: 36px; }
 }

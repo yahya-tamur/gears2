@@ -1075,7 +1075,34 @@ pub fn bevel_pair_mesh(
     backlash_at_toe: bool,
     assembled: bool,
 ) -> Result<Vec<IndexedMesh>> {
+    Ok(bevel_pair_layout(s, teeth, shaft_angle, face, bores, hand, backlash_at_toe, assembled)?.0)
+}
+
+/// Where a gear of a laid-out pair is: its apex, its axis (a unit vector
+/// from the gear toward the apex) and its pitch cone angle. For the page's
+/// section view.
+#[derive(Clone, Copy, Debug)]
+pub struct BevelFrame {
+    pub apex: V,
+    pub axis: V,
+    pub pitch_cone: f64,
+}
+
+/// bevel_pair_mesh(), and each gear's frame in the layout.
+#[allow(clippy::too_many_arguments)]
+pub fn bevel_pair_layout(
+    s: &GearSystem,
+    teeth: [usize; 2],
+    shaft_angle: f64,
+    face: f64,
+    bores: [f64; 2],
+    hand: i32,
+    backlash_at_toe: bool,
+    assembled: bool,
+) -> Result<(Vec<IndexedMesh>, [BevelFrame; 2])> {
     let pair = BevelPair::new(s, teeth, shaft_angle, face, backlash_at_toe)?;
+    // In each gear's own frame the apex is at the origin and the axis is +z.
+    let mut frames = [0, 1].map(|i| BevelFrame { apex: [0.0; 3], axis: [0.0, 0.0, 1.0], pitch_cone: pair.gears[i].delta });
     let mut parts = Vec::new();
     for (which, &bore) in bores.iter().enumerate() {
         parts.push(bevel_gear_mesh(&pair, which, bore, hand)?);
@@ -1083,12 +1110,16 @@ pub fn bevel_pair_mesh(
     if assembled {
         let rot = pair.mesh_rotation(0.0);
         parts[1].vertices = parts[1].vertices.iter().map(|&v| pair.to_world(1, rot, v)).collect();
+        frames[1].axis = pair.to_world(1, rot, [0.0, 0.0, 1.0]);
         // Put the center of gear 1's flat back face (its lowest point) at the origin.
         let z0 = parts[0].vertices.iter().map(|v| v[2]).fold(f64::INFINITY, f64::min);
         for part in parts.iter_mut() {
             for v in part.vertices.iter_mut() {
                 v[2] -= z0;
             }
+        }
+        for f in frames.iter_mut() {
+            f.apex = [0.0, 0.0, -z0];
         }
     } else {
         let mut x = 0.0;
@@ -1101,8 +1132,9 @@ pub fn bevel_pair_mesh(
             for v in part.vertices.iter_mut() {
                 *v = [v[0] + x, v[1], v[2] - z0];
             }
+            frames[which].apex = [x, 0.0, -z0];
             x += reach + 5.0;
         }
     }
-    Ok(parts)
+    Ok((parts, frames))
 }

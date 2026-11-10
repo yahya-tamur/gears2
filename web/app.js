@@ -578,13 +578,80 @@ function setStatus(text, isError = false) {
 // ------------------------------------------------------------------- viewer
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.localClippingEnabled = true; // for the section sliders
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setClearColor(0x26292e);
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 10000);
-camera.up.set(0, 0, 1);
+// Two cameras: perspective for a field of view above 0°, orthographic (as
+// if from infinitely far away) at 0°. Changing the field of view moves the
+// camera so the model (its bounding sphere) stays about the same size, and
+// the camera stays outside it even at wide angles.
+const perspective = new THREE.PerspectiveCamera(35, 1, 0.1, 10000);
+const orthographic = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 10000);
+perspective.up.set(0, 0, 1);
+orthographic.up.set(0, 0, 1);
+let camera = perspective;
 const controls = new OrbitControls(camera, canvas);
 controls.enableDamping = true;
+let sceneSize = 100; // the shown model's size, for the clipping planes
+let aspect = 1;
+
+// How far out the view is: 1 when the model's bounding sphere just fits the
+// view's height, larger when zoomed out.
+function viewScale() {
+  const radius = sceneSize / 2;
+  if (camera.isOrthographicCamera) return (camera.top - camera.bottom) / camera.zoom / (2 * radius);
+  return camera.position.distanceTo(controls.target) * Math.sin(camera.fov * Math.PI / 360) / radius;
+}
+// Point the camera from `direction` (toward it from the target), with the
+// field of view `fov`, zoomed out by `scale` (see viewScale).
+function placeCamera(fov, scale, direction) {
+  const next = fov > 0 ? perspective : orthographic;
+  const radius = sceneSize / 2;
+  const height = 2 * radius * scale; // for the orthographic camera
+  let distance;
+  if (fov > 0) {
+    perspective.fov = fov;
+    distance = scale * radius / Math.sin(fov * Math.PI / 360);
+    perspective.near = distance / 100;
+    perspective.far = distance + sceneSize * 20;
+  } else {
+    // far enough to see the whole model in front of it
+    distance = sceneSize * 5;
+    orthographic.zoom = 1;
+    orthographic.top = height / 2;
+    orthographic.bottom = -height / 2;
+    orthographic.near = 0;
+    orthographic.far = distance + sceneSize * 20;
+  }
+  next.position.copy(controls.target).addScaledVector(direction.clone().normalize(), distance);
+  if (next !== camera) {
+    camera = next;
+    controls.object = camera;
+  }
+  updateAspect();
+  controls.update();
+}
+function updateAspect() {
+  perspective.aspect = aspect;
+  perspective.updateProjectionMatrix();
+  const half = (orthographic.top - orthographic.bottom) / 2;
+  orthographic.left = -half * aspect;
+  orthographic.right = half * aspect;
+  orthographic.updateProjectionMatrix();
+}
+
+const fovInput = document.getElementById("fov");
+const fovValue = document.getElementById("fov-value");
+function setFov(fov) {
+  fovInput.value = fov;
+  fovValue.textContent = fov + "°";
+  placeCamera(fov, viewScale(), camera.position.clone().sub(controls.target));
+}
+fovInput.addEventListener("input", () => {
+  setFov(Number(fovInput.value));
+  try { localStorage.setItem("fov", fovInput.value); } catch {}
+});
 
 scene.add(new THREE.HemisphereLight(0xffffff, 0x444455, 1.6));
 const light = new THREE.DirectionalLight(0xffffff, 1.8);
@@ -595,12 +662,87 @@ const COLORS = { sun: 0x6f93d6, ring: 0xd9a066, planet: 0x7fbf7f };
 let group = new THREE.Group();
 scene.add(group);
 let framedKind = null;
+let reframe = false; // set by loading a settings file: frame the next model anew
+
+// Section: cut away everything above a plane square to a gear's axis, to see
+// inside (only in this view). 100% is no cut; 0% hides everything. A
+// bevel pair is cut with one plane per gear, both through the same
+// point of the line where their pitch cones touch, so the teeth meshing there
+// show at the top of both cuts.
+const sectionInput = document.getElementById("section");
+const sectionValue = document.getElementById("section-value");
+let sections = []; // per gear (or one for all): { axis, plane, meshes, height(t) }
+function updateSections() {
+  const t = Number(sectionInput.value) / 100;
+  sectionValue.textContent = t >= 1 ? "off" : Math.round(t * 100) + "%";
+  for (const sec of sections) {
+    // keep the side where -axis . p + h >= 0, that is below height h
+    sec.plane.normal.copy(sec.axis).negate();
+    sec.plane.constant = t >= 1 ? 1e9 : sec.height(t);
+    // at 0% everything is cut away: show nothing
+    for (const mesh of sec.meshes) mesh.visible = t > 0;
+    outlineCut(sec, t >= 1 || t <= 0 ? null : sec.plane.constant);
+  }
+}
+
+// The outline of a cut: where each triangle crosses the plane, a segment,
+// drawn as a flat strip in the plane a tenth of a module wide (so it scales
+// with the gear, not the view), a hair above the plane so the surfaces along
+// the cut don't hide it. It also covers the seam between the cut face and
+// the sides.
+const outlineMaterial = new THREE.MeshBasicMaterial({ color: 0x101114, side: THREE.DoubleSide });
+function outlineCut(sec, h) {
+  if (sec.outline) {
+    sec.outline.geometry.dispose();
+    group.remove(sec.outline);
+    sec.outline = null;
+  }
+  if (h === null) return;
+  const half = 0.05 * (num("module", 2) || 2);
+  const lift = sceneSize * 2e-4;
+  const axis = sec.axis;
+  const out = [];
+  const p = new THREE.Vector3(), q = new THREE.Vector3(), d = new THREE.Vector3(), n = new THREE.Vector3();
+  const corner = (base, sd, sn) => out.push(base.x + d.x * sd + n.x * sn, base.y + d.y * sd + n.y * sn, base.z + d.z * sd + n.z * sn);
+  for (const { positions: P, indices: I, heights: H } of sec.parts) {
+    for (let t = 0; t < I.length; t += 3) {
+      const a = I[t], b = I[t + 1], c = I[t + 2];
+      const da = H[a] - h, db = H[b] - h, dc = H[c] - h;
+      if ((da > 0 && db > 0 && dc > 0) || (da <= 0 && db <= 0 && dc <= 0)) continue;
+      // the two edges whose ends are on opposite sides
+      const ends = [];
+      for (const [i, j, di, dj] of [[a, b, da, db], [b, c, db, dc], [c, a, dc, da]]) {
+        if ((di > 0) === (dj > 0)) continue;
+        const f = di / (di - dj);
+        ends.push(new THREE.Vector3(
+          P[3 * i] + f * (P[3 * j] - P[3 * i]),
+          P[3 * i + 1] + f * (P[3 * j + 1] - P[3 * i + 1]),
+          P[3 * i + 2] + f * (P[3 * j + 2] - P[3 * i + 2])).addScaledVector(axis, lift));
+      }
+      if (ends.length !== 2) continue;
+      p.copy(ends[0]);
+      q.copy(ends[1]);
+      d.subVectors(q, p);
+      if (d.lengthSq() === 0) continue;
+      d.normalize();
+      n.crossVectors(axis, d); // across the segment, in the plane
+      // a rectangle, run past both ends by half the width to close the joints
+      corner(p, -half, half); corner(p, -half, -half); corner(q, half, -half);
+      corner(p, -half, half); corner(q, half, -half); corner(q, half, half);
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(out), 3));
+  sec.outline = new THREE.Mesh(geometry, outlineMaterial);
+  group.add(sec.outline);
+}
+sectionInput.addEventListener("input", updateSections);
 
 function resize() {
   const { clientWidth: w, clientHeight: h } = canvas.parentElement;
   renderer.setSize(w, h, false);
-  camera.aspect = w / h;
-  camera.updateProjectionMatrix();
+  aspect = w / h;
+  updateAspect();
   // Resizing clears the canvas: draw again now, not on the next frame, so
   // the model doesn't blink while the column is dragged.
   renderer.render(scene, camera);
@@ -609,6 +751,14 @@ new ResizeObserver(resize).observe(canvas.parentElement);
 // Boxes change width with the column: re-place their units.
 new ResizeObserver(() => { for (const name in rows) placeUnit(name); }).observe(document.getElementById("fields"));
 resize();
+try {
+  const saved = Number(localStorage.getItem("fov"));
+  // the camera takes it when the first model is framed
+  if (localStorage.getItem("fov") !== null && saved >= 0 && saved <= 179) {
+    fovInput.value = saved;
+    fovValue.textContent = saved + "°";
+  }
+} catch {}
 
 (function animate() {
   requestAnimationFrame(animate);
@@ -616,11 +766,52 @@ resize();
   renderer.render(scene, camera);
 })();
 
-function show(parts, kind) {
+function show(parts, kind, info) {
   scene.remove(group);
   group.traverse((o) => o.geometry && o.geometry.dispose());
   group = new THREE.Group();
+  // One cut for the whole model, along z; or for a bevel pair one plane per
+  // gear, square to its axis (frames from the build: apex, axis toward the
+  // apex, pitch cone angle).
+  const frames = kind === "bevel" && info && info.bevel_frames;
+  const bevel = !!frames && frames.length === parts.length;
+  sections = (bevel ? frames : [null]).map((f) => ({
+    axis: f ? new THREE.Vector3(...f.axis) : new THREE.Vector3(0, 0, 1),
+    apex: f ? new THREE.Vector3(...f.apex) : null,
+    cone: f ? f.pitch_cone : 0,
+    min: Infinity, max: -Infinity, plane: new THREE.Plane(), meshes: [], parts: [], outline: null,
+  }));
   parts.forEach((part, n) => {
+    const sec = sections[bevel ? n : 0];
+    const P = part.positions;
+    const heights = new Float32Array(P.length / 3); // along the axis, for the outline
+    for (let i = 0; i < P.length; i += 3) {
+      const h = sec.axis.x * P[i] + sec.axis.y * P[i + 1] + sec.axis.z * P[i + 2];
+      heights[i / 3] = h;
+      if (h < sec.min) sec.min = h;
+      if (h > sec.max) sec.max = h;
+    }
+    sec.parts.push({ positions: P, indices: part.indices, heights });
+  });
+  if (bevel) {
+    // A point rho from the apex along the line where the pitch cones touch
+    // is rho cos(cone) below the apex along each gear's axis. One rho sets
+    // both planes, from above both gears (t = 1) to below both (t = 0).
+    const top = sections.map((sec) => sec.axis.dot(sec.apex));
+    let lo = Infinity, hi = -Infinity;
+    sections.forEach((sec, i) => {
+      lo = Math.min(lo, (top[i] - sec.max) / Math.cos(sec.cone));
+      hi = Math.max(hi, (top[i] - sec.min) / Math.cos(sec.cone));
+    });
+    sections.forEach((sec, i) => {
+      sec.height = (t) => top[i] - (hi + t * (lo - hi)) * Math.cos(sec.cone);
+    });
+  } else {
+    const sec = sections[0];
+    sec.height = (t) => sec.min + t * (sec.max - sec.min);
+  }
+  parts.forEach((part, n) => {
+    const sec = sections[bevel ? n : 0];
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.BufferAttribute(part.positions, 3));
     geometry.setIndex(new THREE.BufferAttribute(part.indices, 1));
@@ -628,15 +819,27 @@ function show(parts, kind) {
     let color = COLORS.sun;
     if (kind === "ring" || (kind === "planetary" && n === parts.length - 1)) color = COLORS.ring;
     else if ((kind === "planetary" || kind === "bevel") && n > 0) color = COLORS.planet;
-    const material = new THREE.MeshStandardMaterial({ color, metalness: 0.1, roughness: 0.6, flatShading: true });
-    group.add(new THREE.Mesh(geometry, material));
+    const clippingPlanes = [sec.plane];
+    const material = new THREE.MeshStandardMaterial({ color, metalness: 0.1, roughness: 0.6, flatShading: true, clippingPlanes });
+    // The cut face. Through a cut, a closed solid shows the inside of its far
+    // side exactly where the cut face would be; drawing those back faces in
+    // one flat, unlit, lighter color makes them look like a flat cut face.
+    const inside = new THREE.MeshBasicMaterial({ color: new THREE.Color(color).lerp(new THREE.Color(0xffffff), 0.45), side: THREE.BackSide, clippingPlanes });
+    const meshes = [new THREE.Mesh(geometry, material), new THREE.Mesh(geometry, inside)];
+    group.add(...meshes);
+    sec.meshes.push(...meshes);
   });
+  updateSections();
   scene.add(group);
   // Re-frame only when the type or layout changes, so the view stays put while editing.
   const key = kind + "/" + inputs.layout.value;
-  if (key !== framedKind) {
+  // A new type or layout, or a loaded file: frame it anew, uncut.
+  if (key !== framedKind || reframe) {
+    sectionInput.value = 100;
+    updateSections();
     frame();
     framedKind = key;
+    reframe = false;
   }
 }
 
@@ -645,11 +848,10 @@ function frame() {
   if (box.isEmpty()) return;
   const center = box.getCenter(new THREE.Vector3());
   const size = box.getSize(new THREE.Vector3()).length();
+  sceneSize = size;
   controls.target.copy(center);
-  camera.position.copy(center).add(new THREE.Vector3(0.6, -1.1, 0.8).multiplyScalar(size));
-  camera.near = size / 100;
-  camera.far = size * 20;
-  camera.updateProjectionMatrix();
+  // the view a 35° camera gets from 1.49 sizes away, at any field of view
+  placeCamera(Number(fovInput.value), 0.9, new THREE.Vector3(0.6, -1.1, 0.8));
 }
 
 // ---------------------------------------------------------------------- STL
@@ -1007,7 +1209,7 @@ worker.onmessage = (event) => {
   }
   const kind = inputs.kind.value;
   current = { parts: msg.parts, kind };
-  show(msg.parts, kind);
+  show(msg.parts, kind, msg.info);
   download.disabled = false;
   const i = msg.info;
   setStatus(
@@ -1144,6 +1346,7 @@ document.getElementById("save-settings").addEventListener("click", () => {
 document.getElementById("import-settings").addEventListener("click", () => settingsFile.click());
 function importSettings({ values, names }) {
   if (historyTimer) record();
+  reframe = true;
   // the "set" toggles are about this page, not the gear: keep them
   const notSet = Object.entries(rows).filter(([, e]) => e.set && !e.set.checked).map(([n]) => n);
   applySettings({ values, not_set: notSet });
@@ -1191,7 +1394,8 @@ document.getElementById("import-cancel").addEventListener("click", () => {
 // ------------------------------------------------------------ column resize
 //
 // Drag the divider between the options and the viewer; the width is
-// remembered in this browser.
+// remembered in this browser. On narrow screens the viewer sits above the
+// options and the divider sets its height instead.
 
 const layout = document.querySelector(".layout");
 const resizer = document.getElementById("resizer");
@@ -1204,9 +1408,18 @@ function setOptionsWidth(width) {
   return width;
 }
 
+const stacked = window.matchMedia("(max-width: 1000px)");
+function setViewerHeight(height) {
+  height = Math.min(window.innerHeight - 200, Math.max(120, height));
+  layout.style.setProperty("--viewer-height", `${height}px`);
+  return height;
+}
+
 try {
   const saved = Number(localStorage.getItem("options-width"));
   if (saved) setOptionsWidth(saved);
+  const savedHeight = Number(localStorage.getItem("viewer-height"));
+  if (savedHeight) setViewerHeight(savedHeight);
 } catch {}
 
 resizer.addEventListener("pointerdown", (event) => {
@@ -1214,17 +1427,20 @@ resizer.addEventListener("pointerdown", (event) => {
   resizer.setPointerCapture(event.pointerId);
   resizer.classList.add("dragging");
   document.body.classList.add("resizing");
-  const startX = event.clientX;
-  const startWidth = form.getBoundingClientRect().width;
-  let width = startWidth;
-  const move = (e) => { width = setOptionsWidth(startWidth + e.clientX - startX); };
+  const vertical = stacked.matches;
+  const startX = event.clientX, startY = event.clientY;
+  const start = vertical ? canvas.parentElement.getBoundingClientRect().height : form.getBoundingClientRect().width;
+  let size = start;
+  const move = (e) => {
+    size = vertical ? setViewerHeight(start + e.clientY - startY) : setOptionsWidth(start + e.clientX - startX);
+  };
   const up = () => {
     resizer.removeEventListener("pointermove", move);
     resizer.removeEventListener("pointerup", up);
     resizer.removeEventListener("pointercancel", up);
     resizer.classList.remove("dragging");
     document.body.classList.remove("resizing");
-    try { localStorage.setItem("options-width", String(Math.round(width))); } catch {}
+    try { localStorage.setItem(vertical ? "viewer-height" : "options-width", String(Math.round(size))); } catch {}
   };
   resizer.addEventListener("pointermove", move);
   resizer.addEventListener("pointerup", up);
