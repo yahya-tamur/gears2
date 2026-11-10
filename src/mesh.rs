@@ -308,7 +308,7 @@ impl Triangulation {
     /// Ok((Some(triangle), None)), or Ok((None, Some((a, b)))) if the walk
     /// would have to cross the constrained edge ab (only when
     /// cross_constraints is false).
-    fn locate(&self, p: P, start: Option<usize>, cross_constraints: bool) -> Result<(Option<usize>, Option<(usize, usize)>)> {
+    fn locate(&self, p: P, start: Option<usize>, cross_constraints: bool) -> Result<Located> {
         let mut t = match start {
             Some(s) if self.tris[s].is_some() => s,
             _ => self.last,
@@ -433,6 +433,10 @@ pub struct Triangulated {
 }
 
 const NONE: usize = usize::MAX;
+
+/// What Triangulation::locate finds: the triangle, or the constrained edge
+/// in the way.
+type Located = (Option<usize>, Option<(usize, usize)>);
 
 /// Constrained Delaunay triangulation of a polygon with holes, refined with
 /// Ruppert's algorithm.

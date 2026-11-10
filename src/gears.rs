@@ -59,6 +59,10 @@
 use std::f64::consts::PI;
 use std::fmt;
 
+/// A planetary set's layout: ring teeth, [(planet center, planet
+/// rotation)], ring rotation (see GearSystem::planetary_layout).
+pub type PlanetaryLayout = (usize, Vec<(P, f64)>, f64);
+
 pub type P = (f64, f64);
 
 /// Shortest tip or root land kept, in mm (or 2 * ds, if that is longer: see
@@ -539,7 +543,34 @@ impl GearSystem {
         Self::create(params, teeth_limit, false)
     }
 
+    /// Whether new_quick(params, teeth_limit) makes a gear set in which these
+    /// tooth counts work: a spur gear with `spur` teeth and, if given, a ring
+    /// with `ring` teeth. Much quicker than finding the minimums: a tooth
+    /// count works exactly when it's at least the minimum (see the guarantee
+    /// above), so each count is checked on its own.
+    pub fn teeth_fit(params: &Params, spur: usize, ring: Option<usize>, teeth_limit: usize) -> bool {
+        let Ok(s) = Self::checked(params, teeth_limit) else { return false };
+        let spur_ok = |z: usize| (3..=teeth_limit).contains(&z) && s.spur_problem(z).is_none();
+        // The gear set needs some ring to work (within the limit), and the
+        // ring minimum is also at least 3 * the spur minimum.
+        let ring_ok = |r: usize| r <= teeth_limit && spur_ok(r / 3) && s.ring_problem(r).is_none();
+        spur_ok(spur) && ring_ok(ring.unwrap_or(teeth_limit))
+    }
+
     fn create(params: &Params, teeth_limit: usize, blame: bool) -> Result<Self> {
+        let mut system = Self::checked(params, teeth_limit)?;
+        match system.minimums() {
+            Ok((spur, ring)) => {
+                system.min_spur_teeth = spur;
+                system.min_ring_teeth = ring;
+                Ok(system)
+            }
+            Err(e) => Err(if blame { system.blame_spacing().unwrap_or(e) } else { e }),
+        }
+    }
+
+    /// The gear set with every check but the tooth minimums (left 0).
+    fn checked(params: &Params, teeth_limit: usize) -> Result<Self> {
         let Params { pitch, pressure_angle, height, backlash, max_deviation, ds, helix_angle, .. } = *params;
         if !(pitch > 0.0) {
             return err("The module must be positive.");
@@ -596,7 +627,7 @@ impl GearSystem {
                  between one tooth and the next. Use a taller tooth height or a larger pressure angle.",
             );
         }
-        let mut system = GearSystem {
+        Ok(GearSystem {
             pitch,
             pressure_angle,
             height,
@@ -611,15 +642,7 @@ impl GearSystem {
             min_spur_teeth: 0,
             min_ring_teeth: 0,
             teeth_limit,
-        };
-        match system.minimums() {
-            Ok((spur, ring)) => {
-                system.min_spur_teeth = spur;
-                system.min_ring_teeth = ring;
-                Ok(system)
-            }
-            Err(e) => Err(if blame { system.blame_spacing().unwrap_or(e) } else { e }),
-        }
+        })
     }
 
     /// (min_spur_teeth, min_ring_teeth), or why no tooth count works.
@@ -785,11 +808,20 @@ impl GearSystem {
         None
     }
 
+    /// The fewest teeth that work, by halving: a tooth count works exactly
+    /// when it's at least the minimum (see the guarantee above).
     fn find_minimum(&self, kind: &str, problem: impl Fn(&Self, usize) -> Option<&'static str>) -> Result<usize> {
-        for teeth in 3..=self.teeth_limit {
-            if problem(self, teeth).is_none() {
-                return Ok(teeth);
+        if self.teeth_limit >= 3 && problem(self, self.teeth_limit).is_none() {
+            let (mut bad, mut good) = (2, self.teeth_limit); // bad fails (or is below 3), good works
+            while good - bad > 1 {
+                let mid = (bad + good) / 2;
+                if problem(self, mid).is_none() {
+                    good = mid;
+                } else {
+                    bad = mid;
+                }
             }
+            return Ok(good);
         }
         err(format!(
             "This gear set can't make {} gears with any number of teeth: {}. Use a smaller tooth height \
@@ -1247,7 +1279,7 @@ impl GearSystem {
         teeth_planet: usize,
         planets: usize,
         sun_rotation: f64,
-    ) -> Result<(usize, Vec<(P, f64)>, f64)> {
+    ) -> Result<PlanetaryLayout> {
         self.check_teeth("spur", teeth_sun)?;
         self.check_teeth("spur", teeth_planet)?;
         if planets < 1 {

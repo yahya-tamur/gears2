@@ -1126,7 +1126,7 @@ function startSearch() {
     if (!Number.isFinite(value)) continue;
     // the bevel backlash end left on auto stays auto
     if (AUTO_PARTNER[name] && blank) continue;
-    free.push({ name, value, min: s.r[0], max: s.r[1], step: s.r[2], label: (entry.field.labels && entry.field.labels[kind]) || entry.field.label, blank });
+    free.push({ name, value, min: s.r[0], max: s.r[1], step: s.r[2], whole: !!entry.field.whole, label: (entry.field.labels && entry.field.labels[kind]) || entry.field.label, blank });
   }
   if (!free.length) {
     statusLine.textContent = "Every value is set: turn \"set\" off on the values Search may change, then click Search.";
@@ -1136,7 +1136,7 @@ function startSearch() {
   searchId += 1;
   if (!searchWorker) searchWorker = new Worker("search.js", { type: "module" });
   searchWorker.onmessage = (event) => onSearch(event.data, free);
-  searchWorker.postMessage({ id: searchId, params: read.params, free: free.map(({ name, value, min, max, step }) => ({ name, value, min, max, step })) });
+  searchWorker.postMessage({ id: searchId, params: read.params, free: free.map(({ name, value, min, max, step, whole }) => ({ name, value, min, max, step, whole })), log: searchLogging() });
   setButton("searching");
 }
 
@@ -1148,6 +1148,34 @@ function stopSearch(message) {
   if (message) statusLine.textContent = message;
 }
 
+// For testing Search, not for users: in the browser console,
+// searchLog(true) keeps every combination the next searches score;
+// downloadSearchLog() saves the last search's as a CSV file (one row per
+// combination: the free values as scored, then the score, 0 if it works;
+// for the exhaustive search a code: 0 works, 1 fails a check, 2 no gear set).
+function searchLogging() {
+  try { return localStorage.getItem("search-log") === "on"; } catch { return false; }
+}
+window.searchLog = (on = true) => {
+  try { if (on) localStorage.setItem("search-log", "on"); else localStorage.removeItem("search-log"); } catch {}
+  return on ? "Search logging on: run a search, then downloadSearchLog()." : "Search logging off.";
+};
+let lastSearchLog = null;
+window.downloadSearchLog = () => {
+  if (!lastSearchLog) return "No search log yet: searchLog(true), then run a search.";
+  const { names, rows } = lastSearchLog;
+  const width = names.length + 1;
+  const lines = [[...names, "score"].join(",")];
+  for (let i = 0; i < rows.length; i += width) lines.push(Array.from(rows.subarray(i, i + width)).join(","));
+  const url = URL.createObjectURL(new Blob([lines.join("\n") + "\n"], { type: "text/csv" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "search_log.csv";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return `${rows.length / width} combinations saved.`;
+};
+
 function onSearch(msg, free) {
   if (msg.id !== searchId) return;
   if (msg.type === "progress") {
@@ -1155,6 +1183,11 @@ function onSearch(msg, free) {
     return;
   }
   searching = false;
+  if (msg.log) {
+    lastSearchLog = msg.log;
+    window.lastSearchLog = msg.log;
+    console.log(`Search log: ${msg.log.rows.length / (msg.log.names.length + 1)} combinations (downloadSearchLog() saves them).`);
+  }
   if (!msg.found) {
     setButton("failed");
     statusLine.textContent = `No working values found by changing the values that aren't set (${msg.evals.toLocaleString()} tried, ` +

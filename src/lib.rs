@@ -4,6 +4,7 @@
 //! - `gears`: the tooth system and 2D outlines (GearSystem).
 //! - `mesh`: indexed meshes, constrained Delaunay triangulation with
 //!   Ruppert refinement, and gear solids.
+//! - `search`: exhaustive search for working values (for the page's Search).
 //! - `web`: the WebAssembly interface used by the web page.
 
 // Parameter checks are written `!(x > 0.0)` on purpose: unlike `x <= 0.0`,
@@ -11,6 +12,7 @@
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
 pub mod bevel;
+pub mod search;
 pub mod gears;
 pub mod mesh;
 pub mod web;
