@@ -322,6 +322,23 @@ body.resizing { cursor: col-resize; user-select: none; }
 /* Values "Find values that work" changed, until edited. */
 .input input.changed { border-color: var(--ok); background: rgba(129, 201, 149, 0.14); }
 
+
+/* Save the settings to a file, or load them from one. */
+/* After a settings file with problems, its message and choices take the
+   place of the save and load buttons. */
+.file-actions { margin: 4px 0 16px; }
+.file-row { display: flex; gap: 8px; }
+.file-row[hidden] { display: none; } /* display: flex would show it anyway */
+button#import-cancel { color: var(--error); }
+.file-row button:disabled { opacity: 0.5; }
+.file-row button {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--accent);
+  font-size: 13px;
+}
+
 /* After a search: go back to the values from before it (Ctrl+Z on phones). */
 button.restore {
   flex: none;

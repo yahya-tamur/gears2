@@ -20,6 +20,18 @@
     <form id="options" class="options" autocomplete="off" novalidate>
       <h1>Gear generator</h1>
       <div id="fields"></div>
+      <div class="file-actions">
+        <p id="import-error" class="error-box" role="alert" hidden></p>
+        <div id="file-buttons" class="file-row">
+          <button type="button" id="save-settings" title="Save this gear's settings to a small text file">Save Gear Settings</button>
+          <button type="button" id="import-settings" title="Load a saved gear settings file">Load Gear Settings</button>
+        </div>
+        <div id="import-choices" class="file-row" hidden>
+          <button type="button" id="import-anyway">Load valid settings</button>
+          <button type="button" id="import-cancel">Cancel</button>
+        </div>
+        <input type="file" id="settings-file" accept=".txt,text/plain" hidden>
+      </div>
       <div class="dock">
         <p id="error" class="error-box" role="alert" hidden></p>
         <div class="actions">

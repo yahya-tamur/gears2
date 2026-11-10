@@ -119,12 +119,12 @@ const SECTIONS = [
     title: "Smoothness",
     help: "How closely the flat triangles of the STL follow the true curved surfaces. Finer is smoother but makes larger files.",
     fields: [
-      { name: "max_deviation", label: "Surface accuracy", unit: "mm", value: "0.01",
-        help: "The flat triangles stay within this distance of the exact shape, always cutting into the material, never out of it. So the play between meshing gears can grow by up to twice this, never shrink." },
-      { name: "ds", label: "Smallest point spacing", unit: "mm", value: "0.05",
-        help: "No two points of the mesh closer than this, which keeps tiny sliver triangles out of the file." },
-      { name: "fillet_deviation", label: "Root rounding accuracy", unit: "mm", optional: "auto",
-        help: () => `Surface accuracy for the rounded corners at the bottom of each gap between teeth (see Root rounding). Their exact shape doesn't affect how the gears mesh, so they can be coarser. Leave blank for automatic${now(Math.max(0.05, num("max_deviation", NaN)))}; it follows the surface accuracy when that is coarser.` },
+      { name: "max_deviation", label: "Surface deviation", unit: "mm", value: "0.01",
+        help: "The mesh may deviate from the exact shape by up to this much, to reduce triangles. Distances between parts can only grow, never shrink." },
+      { name: "ds", label: "Minimum point spacing", unit: "mm", value: "0.05",
+        help: "Minimum distance between points." },
+      { name: "fillet_deviation", label: "Root rounding deviation", unit: "mm", optional: "auto",
+        help: "Surface deviation for the rounded corners at the bottom of the gaps between teeth (see Root rounding). A larger value here doesn't affect how the gear works, and significantly simplifies the mesh." },
     ],
   },
 ];
@@ -159,15 +159,17 @@ function chamferHelp(where) {
 
 // Slider ranges [min, max, step] for every number field. Click a slider's
 // end to change them; changes are remembered in this browser.
+// Default slider [min, max, step]: at most about 20 steps, so each step can
+// be felt, covering the usual values. Typing past an end extends it.
 const RANGES = {
-  module: [0.5, 5, 0.25], pressure_angle: [10, 35, 0.5], helix_angle: [0, 45, 1], height: [0.5, 10, 0.1],
-  backlash: [0, 1, 0.05], clearance: [0, 2, 0.05], fillet_radius: [0, 3, 0.05],
-  teeth: [6, 100, 1], ring_teeth: [20, 200, 1], teeth2: [6, 100, 1], shaft_angle: [10, 170, 1],
-  sun_teeth: [6, 60, 1], planet_teeth: [6, 60, 1], planets: [1, 12, 1],
-  face_width: [2, 50, 0.5], width: [2, 100, 1], bore: [0, 50, 0.5], bore2: [0, 50, 0.5], planet_bore: [0, 30, 0.5],
-  backlash_inner: [0, 1, 0.05], backlash_outer: [0, 1, 0.05], rim: [20, 300, 1],
-  end_bottom: [0, 15, 0.25], end_top: [0, 15, 0.25],
-  max_deviation: [0.001, 0.1, 0.001], ds: [0.01, 0.5, 0.01], fillet_deviation: [0.005, 0.2, 0.005],
+  module: [0.5, 5, 0.25], pressure_angle: [10, 30, 1], helix_angle: [0, 50, 2.5], height: [0.5, 10, 0.5],
+  backlash: [0, 1, 0.05], clearance: [0, 2, 0.1], fillet_radius: [0, 2, 0.1],
+  teeth: [8, 28, 1], ring_teeth: [50, 70, 1], teeth2: [16, 36, 1], shaft_angle: [40, 140, 5],
+  sun_teeth: [8, 28, 1], planet_teeth: [8, 28, 1], planets: [1, 12, 1],
+  face_width: [4, 24, 1], width: [5, 55, 2.5], bore: [0, 20, 1], bore2: [0, 20, 1], planet_bore: [0, 20, 1],
+  backlash_inner: [0, 1, 0.05], backlash_outer: [0, 1, 0.05], rim: [40, 240, 10],
+  end_bottom: [0, 10, 0.5], end_top: [0, 10, 0.5],
+  max_deviation: [0.002, 0.04, 0.002], ds: [0.01, 0.2, 0.01], fillet_deviation: [0.01, 0.2, 0.01],
 };
 // Typing a value past a slider's end moves that end out to it (as in
 // Desmos), but never past what the value can be at all: a pressure angle is
@@ -293,6 +295,13 @@ function buildSlider(f, input, row) {
   reset.addEventListener("click", () => {
     try { localStorage.removeItem("range:" + f.name); } catch {}
     apply(RANGES[f.name], false);
+    // A value outside the default range moves to its nearer end.
+    const v = num(f.name, NaN);
+    const [min, max] = RANGES[f.name];
+    if (Number.isFinite(v) && (v < min || v > max)) {
+      input.value = String(Math.min(max, Math.max(min, v)));
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }
   });
   editor.addEventListener("focusout", (e) => {
     if (!editor.contains(e.relatedTarget) && e.relatedTarget !== lo && e.relatedTarget !== hi) editor.hidden = true;
@@ -780,7 +789,54 @@ function record() {
   history.push(now);
   if (history.length > 200) history.shift();
   historyAt = history.length - 1;
+  save();
 }
+
+// The browser's memory of the page: every value, choice and toggle, as
+//   { "gears2": 1, "values": { "kind": "planetary", "module": 2, "height": "auto", ... },
+//     "not_set": ["teeth", ...] }
+// ("not_set" lists the values Search may change). Settings files are
+// different: see "Settings files" below.
+function settingsObject() {
+  const values = {}, notSet = [];
+  for (const [name, input] of Object.entries(inputs)) {
+    const entry = rows[name];
+    if (entry.auto && entry.auto.checked) values[name] = "auto";
+    else {
+      const text = input.value.trim();
+      values[name] = input.tagName !== "SELECT" && text !== "" && Number.isFinite(Number(text)) ? Number(text) : input.value;
+    }
+    if (entry.set && !entry.set.checked) notSet.push(name);
+  }
+  return { gears2: 1, values, not_set: notSet };
+}
+// Applies what it can; returns false if it isn't a settings object at all.
+function applySettings(obj) {
+  if (!obj || typeof obj !== "object" || !obj.values || typeof obj.values !== "object") return false;
+  const state = {};
+  for (const [name, v] of Object.entries(obj.values)) {
+    const input = inputs[name];
+    if (!input || !["string", "number"].includes(typeof v)) continue;
+    const auto = rows[name].auto;
+    const value = v === "auto" && auto ? "" : String(v);
+    if (input.tagName === "SELECT" && ![...input.options].some((o) => o.value === value)) continue;
+    state[name] = [value, auto ? v === "auto" : null];
+  }
+  restore(state);
+  const notSet = Array.isArray(obj.not_set) ? obj.not_set : [];
+  for (const [name, entry] of Object.entries(rows)) if (entry.set) entry.set.checked = !notSet.includes(name);
+  return true;
+}
+
+// The latest settings are kept in the browser, so closing the tab and
+// opening the page again brings back the same gear.
+function save() {
+  try { localStorage.setItem("settings", JSON.stringify(settingsObject())); } catch {}
+}
+function load() {
+  try { applySettings(JSON.parse(localStorage.getItem("settings"))); } catch {}
+}
+addEventListener("pagehide", () => { if (historyTimer) record(); else save(); });
 
 function recordSoon() {
   clearTimeout(historyTimer);
@@ -924,6 +980,8 @@ function onSearch(msg, free) {
   requestBuild();
 }
 
+const defaultSettings = settingsObject(); // what a settings file leaves out
+load();
 showFieldsFor(inputs.kind.value);
 record(); // the starting settings, for Ctrl+Z
 setButton("loading");
@@ -968,6 +1026,166 @@ download.addEventListener("click", () => {
   a.download = `${current.kind}_gear.stl`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+
+// ---------------------------------------------------------- settings files
+//
+// A settings file describes one gear, as plain text, one setting per line:
+//
+//   gears2 version: 0.1.0
+//   kind: planetary
+//   module: 2
+//   height: auto
+//   hand: counterclockwise
+//
+// Only the settings this kind of gear uses are written. When reading, a
+// setting that's left out takes its default value, blank lines and anything
+// after "#" are ignored, and quotes around a value are optional. A file with
+// problems (bad lines, another version or none) isn't loaded, but "Load
+// valid settings" takes its good lines; a bad line's setting takes its default.
+
+const VERSION = "0.1.0"; // keep equal to the version in Cargo.toml
+const FIELDS = SECTIONS.flatMap((section) => section.fields);
+
+// A choice is written by its value, or by its name when the value is a number.
+const choiceText = (input) => {
+  const option = input.options[input.selectedIndex];
+  return /^-?\d/.test(option.value) ? option.textContent.toLowerCase() : option.value;
+};
+
+function settingsText() {
+  const kind = inputs.kind.value;
+  const lines = [`gears2 version: ${VERSION}`];
+  // the kind first, since it decides which settings follow
+  for (const f of [FIELDS.find((f) => f.name === "kind"), ...FIELDS.filter((f) => f.name !== "kind")]) {
+    if (f.kinds && !f.kinds.includes(kind)) continue;
+    const input = inputs[f.name];
+    const entry = rows[f.name];
+    let value;
+    if (input.tagName === "SELECT") value = choiceText(input);
+    else if (entry.auto && entry.auto.checked) value = "auto";
+    else value = input.value.trim();
+    lines.push(`${f.name}: ${value}`);
+  }
+  return lines.join("\n") + "\n";
+}
+
+// The same checks as readOptions, plus the angle limits. Returns the number,
+// or a problem as text.
+function checkNumber(f, text) {
+  const value = Number(text.replace(",", "."));
+  if (text === "" || !Number.isFinite(value)) return `must be a number${rows[f.name].auto ? ' or "auto"' : ""}`;
+  if (value < 0) return f.name === "helix_angle" ? "can't be negative (change the twist direction instead)" : "can't be negative";
+  if (f.whole && !Number.isInteger(value)) return "must be a whole number";
+  const limit = LIMITS[f.name];
+  if (limit && value > limit[1]) return `must be at most ${limit[1]}`;
+  return value;
+}
+
+// Returns { values, names, errors, invalid }: values in the browser-memory
+// form, with defaults for whatever the file leaves out or gets wrong; names,
+// the settings it set; errors, one line per problem; invalid, whether any
+// setting was bad (rather than just the version).
+function parseSettings(text) {
+  const errors = [];
+  const values = { ...defaultSettings.values };
+  const names = [];
+  let version = null;
+  text.split(/\r?\n/).forEach((raw, i) => {
+    const line = raw.replace(/#.*/, "").trim();
+    if (!line) return;
+    const at = `Line ${i + 1}`;
+    const colon = line.indexOf(":");
+    if (colon < 0) { errors.push(`${at} needs a name and a value, like "module: 2".`); return; }
+    const name = line.slice(0, colon).trim();
+    const value = line.slice(colon + 1).trim().replace(/^(["'])(.*)\1$/, "$2");
+    if (name === "gears2 version") { version = value; return; }
+    const input = inputs[name];
+    const f = FIELDS.find((f) => f.name === name);
+    if (!input || !f) { errors.push(`${at}: there's no setting called "${name}".`); return; }
+    if (input.tagName === "SELECT") {
+      const option = [...input.options].find((o) =>
+        o.value === value || o.textContent.toLowerCase() === value.toLowerCase());
+      if (!option) {
+        const choices = [...input.options].map((o) => /^-?\d/.test(o.value) ? o.textContent.toLowerCase() : o.value);
+        errors.push(`${at}: ${name} must be one of ${choices.join(", ")}.`);
+        return;
+      }
+      values[name] = option.value;
+    } else if (value === "auto") {
+      if (!rows[name].auto) { errors.push(`${at}: ${name} can't be auto.`); return; }
+      values[name] = "auto";
+    } else {
+      const checked = checkNumber(f, value);
+      if (typeof checked === "string") { errors.push(`${at}: ${name} ${checked}.`); return; }
+      values[name] = checked;
+    }
+    names.push(name);
+  });
+  const invalid = errors.length > 0; // problems with the settings themselves
+  if (version === null) errors.unshift('It has no "gears2 version" line, so it may not be a gear settings file.');
+  else if (version !== VERSION) errors.unshift(`It was saved by gears2 version ${version}; this is version ${VERSION}.`);
+  return { values, names, errors, invalid };
+}
+
+const settingsFile = document.getElementById("settings-file");
+const importError = document.getElementById("import-error");
+const importChoices = document.getElementById("import-choices");
+const fileButtons = document.getElementById("file-buttons");
+let pendingImport = null; // a settings file with problems, for "Load valid settings"
+document.getElementById("save-settings").addEventListener("click", () => {
+  const url = URL.createObjectURL(new Blob([settingsText()], { type: "text/plain" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${inputs.kind.value}_gear_settings.txt`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+document.getElementById("import-settings").addEventListener("click", () => settingsFile.click());
+function importSettings({ values, names }) {
+  if (historyTimer) record();
+  // the "set" toggles are about this page, not the gear: keep them
+  const notSet = Object.entries(rows).filter(([, e]) => e.set && !e.set.checked).map(([n]) => n);
+  applySettings({ values, not_set: notSet });
+  for (const name of names) if (sliders[name]) extendRange(name);
+  record(); // Ctrl+Z goes back to the settings from before the import
+}
+// Choosing a file also fires "input", which would reach the form and rebuild
+// (clearing the error box): it isn't a setting.
+settingsFile.addEventListener("input", (e) => e.stopPropagation());
+settingsFile.addEventListener("change", async () => {
+  const file = settingsFile.files[0];
+  settingsFile.value = ""; // so choosing the same file again still loads it
+  if (!file) return;
+  const parsed = parseSettings(await file.text());
+  if (!parsed.errors.length) {
+    importSettings(parsed);
+    return;
+  }
+  importError.textContent = (parsed.invalid ? `Some settings in "${file.name}" are invalid:\n` : `Didn't load "${file.name}":\n`) +
+    parsed.errors.join("\n");
+  pendingImport = parsed;
+  showImportChoices(true);
+  document.getElementById("import-anyway").disabled = !parsed.names.length;
+  // in view above the buttons docked at the bottom
+  importChoices.style.scrollMarginBottom = document.querySelector(".dock").offsetHeight + 8 + "px";
+  importChoices.scrollIntoView({ block: "nearest" });
+});
+// The message and choices take the place of the save and load buttons.
+function showImportChoices(on) {
+  importError.hidden = !on;
+  importChoices.hidden = !on;
+  fileButtons.hidden = on;
+}
+// "Load valid settings": the settings that passed; the rest take their defaults.
+document.getElementById("import-anyway").addEventListener("click", () => {
+  showImportChoices(false);
+  if (pendingImport) importSettings(pendingImport);
+  pendingImport = null;
+});
+document.getElementById("import-cancel").addEventListener("click", () => {
+  showImportChoices(false);
+  pendingImport = null;
 });
 
 // ------------------------------------------------------------ column resize
