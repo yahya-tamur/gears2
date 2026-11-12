@@ -881,7 +881,14 @@ tickObserver.observe(spinInput);
 let speed = 0; // turns per second now, easing toward turnsPerSecond()
 const EASE = 0.25; // seconds: the time constant of speeding up or slowing down
 
+const spinReset = document.getElementById("spin-reset");
+// The reset icon only shows when there's something to reset: the gears
+// turned from the files' positions, or set spinning.
+function updateResetIcon() {
+  spinReset.hidden = angle === 0 && speed === 0 && Number(spinInput.value) === 0;
+}
 function updateSpinControls() {
+  updateResetIcon();
   spinRow.hidden = !spinnable;
   holdRow.hidden = !(spinnable && spinners.some((p) => p.role === "planet"));
   for (const b of holdRow.querySelectorAll("button")) b.setAttribute("aria-pressed", String(b.dataset.hold === hold));
@@ -913,7 +920,8 @@ function stopSpin() {
   turnParts();
 }
 
-document.getElementById("spin-reset").addEventListener("click", stopSpin);
+spinReset.addEventListener("click", stopSpin);
+spinInput.addEventListener("input", updateResetIcon);
 for (const b of holdRow.querySelectorAll("button")) {
   b.addEventListener("click", () => {
     hold = b.dataset.hold;
@@ -935,6 +943,7 @@ let lastFrame = performance.now();
   if (spinnable && speed !== 0) {
     angle += 2 * Math.PI * speed * dt;
     turnParts();
+    if (spinReset.hidden) updateResetIcon();
   }
   lastFrame = now;
   controls.update();

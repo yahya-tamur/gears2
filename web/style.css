@@ -346,6 +346,7 @@ canvas { display: block; width: 100%; height: 100%; }
   font-size: 12px;
 }
 .view-controls button.icon { display: flex; padding: 2px; border: none; }
+.view-controls button.icon[hidden] { display: none; }
 .view-controls button.icon:hover { color: var(--text); }
 .hold-buttons { display: flex; }
 .hold-buttons button.hold { border-radius: 0; }
