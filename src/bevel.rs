@@ -113,11 +113,11 @@ pub fn rot_y(v: V, a: f64) -> V {
     let (c, s) = (a.cos(), a.sin());
     [v[0] * c + v[2] * s, v[1], -v[0] * s + v[2] * c]
 }
-fn mirror(v: V) -> V {
+pub(crate) fn mirror(v: V) -> V {
     [v[0], -v[1], v[2]]
 }
 /// Rodrigues: turn v about the unit axis k by angle a.
-fn rotate_about(v: V, k: V, a: f64) -> V {
+pub(crate) fn rotate_about(v: V, k: V, a: f64) -> V {
     let (c, s) = (a.cos(), a.sin());
     add(add(scale(v, c), scale(cross(k, v), s)), scale(k, dot(k, v) * (1.0 - c)))
 }
@@ -317,6 +317,64 @@ pub fn sph_arc(center: V, start: V, end: V, dev: f64, ds: f64, outside: bool) ->
     }
     points.push(end);
     points
+}
+
+/// One exact piece of a bevel gear's outline on the unit sphere (see
+/// BevelPair::outline_pieces), parametrized by t from 0 to 1.
+#[derive(Debug, Clone, Copy)]
+pub enum SphPiece {
+    /// A flank from s0 to s1, both on the involute (s >= 0: t linear in the
+    /// unrolled angle tau, s = tau^2 / 2, in which it is smooth even at the
+    /// base cone) or both on the meridian (s <= 0, t linear in s); mirrored
+    /// (y -> -y) if `mirrored`, then turned by `turn` about the axis.
+    Flank { flank: SphFlank, s0: f64, s1: f64, mirrored: bool, turn: f64 },
+    /// The small circle about `center` (unit), from `start` through `sweep`
+    /// radians (counterclockwise about center).
+    Circle { center: V, start: V, sweep: f64 },
+}
+
+impl SphPiece {
+    /// The flank from s0 to s1 as one piece, or two across the base cone.
+    pub fn flank(flank: SphFlank, s0: f64, s1: f64, mirrored: bool) -> Vec<SphPiece> {
+        let piece = |s0, s1| SphPiece::Flank { flank, s0, s1, mirrored, turn: 0.0 };
+        if s0.min(s1) < 0.0 && s0.max(s1) > 0.0 {
+            vec![piece(s0, 0.0), piece(0.0, s1)]
+        } else {
+            vec![piece(s0, s1)]
+        }
+    }
+
+    /// The small circle about `center` from `start` to `end`, the short way
+    /// (as sph_arc draws it).
+    pub fn arc(center: V, start: V, end: V) -> SphPiece {
+        let (u, v) = (unit(sub(start, scale(center, dot(start, center)))), unit(sub(end, scale(center, dot(end, center)))));
+        SphPiece::Circle { center, start, sweep: dot(cross(u, v), center).atan2(dot(u, v)) }
+    }
+
+    /// The point at t (unit).
+    pub fn at(&self, t: f64) -> V {
+        match *self {
+            SphPiece::Flank { flank, s0, s1, mirrored, turn } => {
+                let s = if s0 >= 0.0 && s1 >= 0.0 {
+                    let (a, b) = ((2.0 * s0).sqrt(), (2.0 * s1).sqrt());
+                    let tau = a + (b - a) * t;
+                    tau * tau / 2.0
+                } else {
+                    s0 + (s1 - s0) * t
+                };
+                let p = flank.at(s);
+                rot_z(if mirrored { mirror(p) } else { p }, turn)
+            }
+            SphPiece::Circle { center, start, sweep } => rotate_about(start, center, sweep * t),
+        }
+    }
+
+    pub fn rotated(&self, angle: f64) -> SphPiece {
+        match *self {
+            SphPiece::Flank { flank, s0, s1, mirrored, turn } => SphPiece::Flank { flank, s0, s1, mirrored, turn: turn + angle },
+            SphPiece::Circle { center, start, sweep } => SphPiece::Circle { center: rot_z(center, angle), start: rot_z(start, angle), sweep },
+        }
+    }
 }
 
 // ------------------------------------------------------------------ the pair
@@ -824,6 +882,58 @@ impl BevelPair {
         (0..g.teeth).flat_map(|i| period.iter().map(move |&p| rot_z(p, i as f64 * step))).collect()
     }
 
+    /// Polar angle of gear `which`'s fold circle: module / 4 inside the root
+    /// circle at the heel, where the flat body faces meet the tooth ends.
+    pub fn fold(&self, which: usize) -> f64 {
+        let g = &self.gears[which];
+        let module = 2.0 * self.r_cone * g.delta.sin() / g.teeth as f64;
+        g.root - 0.25 * module / self.r_cone
+    }
+
+    /// A bore (diameter) must leave gear `which`'s flat face at the toe a
+    /// margin.
+    pub fn check_bore(&self, which: usize, bore: f64) -> Result<()> {
+        let toe = self.r_cone - self.face;
+        let r_fold_toe = toe * self.fold(which).sin();
+        if bore < 0.0 {
+            return err("The bore can't be negative.");
+        }
+        if bore > 0.0 && bore / 2.0 > r_fold_toe - 2.0 * self.ds * toe {
+            return err(format!(
+                "{}'s bore ({} mm) must be smaller than its flat face at the inner end ({:.3} mm across).",
+                BevelPair::name(which),
+                bore,
+                2.0 * r_fold_toe
+            ));
+        }
+        Ok(())
+    }
+
+    /// outline() as exact pieces instead of points, in the same order (for
+    /// STEP files). A flank crossing the base cone is two pieces: the
+    /// meridian below it and the involute.
+    pub fn outline_pieces(&self, which: usize) -> Vec<SphPiece> {
+        let g = &self.gears[which];
+        let step = 2.0 * PI / g.teeth as f64;
+        let pole = [0.0, 0.0, -1.0];
+        let tip = g.flank.at(g.s_tip);
+        let (p_lo, q_lo) = (mirror(g.p), mirror(g.q));
+        let mut period = Vec::new();
+        if g.rho > 0.0 {
+            period.push(SphPiece::arc(mirror(g.c.unwrap()), q_lo, p_lo));
+        }
+        period.extend(SphPiece::flank(g.flank, g.s_p, g.s_tip, true));
+        period.push(SphPiece::arc(pole, mirror(tip), tip));
+        period.extend(SphPiece::flank(g.flank, g.s_tip, g.s_p, false));
+        if g.rho > 0.0 {
+            period.push(SphPiece::arc(g.c.unwrap(), g.p, g.q));
+        }
+        if !g.full_round {
+            period.push(SphPiece::arc(pole, g.q, rot_z(q_lo, step)));
+        }
+        (0..g.teeth).flat_map(|i| period.iter().map(move |p| p.rotated(i as f64 * step))).collect()
+    }
+
     /// Turn of the section at cone distance rho, for gear `which` with the
     /// given hand (gear 1's hand; gear 2 gets the opposite in its own frame,
     /// which meshes: see mesh_rotation).
@@ -915,28 +1025,14 @@ pub fn bevel_gear_mesh(pair: &BevelPair, which: usize, bore: f64, hand: i32) -> 
     if hand != 1 && hand != -1 {
         return err("The twist direction must be 1 or -1.");
     }
-    let g = &pair.gears[which];
     let (r, f) = (pair.r_cone, pair.face);
     let toe = r - f;
-    // Fold circle: module / 4 inside the root circle at the heel (an angle).
-    let module = 2.0 * r * g.delta.sin() / g.teeth as f64;
-    let fold = g.root - 0.25 * module / r;
+    let fold = pair.fold(which);
     let depth = r * fold.cos(); // the heel's flat face, below the apex
     let r_fold = r * fold.sin(); // fold circle radius in the projection plane (= on the heel)
-    let r_fold_toe = toe * fold.sin();
     let rb = bore / 2.0;
     let ds = pair.ds * r; // point spacing, scaled to the heel
-    if bore < 0.0 {
-        return err("The bore can't be negative.");
-    }
-    if rb > 0.0 && rb > r_fold_toe - 2.0 * pair.ds * toe {
-        return err(format!(
-            "{}'s bore ({} mm) must be smaller than its flat face at the inner end ({:.3} mm across).",
-            BevelPair::name(which),
-            bore,
-            2.0 * r_fold_toe
-        ));
-    }
+    pair.check_bore(which, bore)?;
     let to_plane = |v: V| -> (f64, f64) {
         let (rr, a) = (r_fold + r * (polar(v) - fold), azimuth(v));
         (rr * a.cos(), rr * a.sin())

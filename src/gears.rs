@@ -205,6 +205,78 @@ pub fn arc_points(center: P, start: P, end: P, max_deviation: f64, ds: f64, outs
     points
 }
 
+/// One exact piece of a gear outline (see GearSystem::spur_gear_pieces),
+/// parametrized by t from 0 (its start) to 1 (its end).
+#[derive(Debug, Clone, Copy)]
+pub enum Piece {
+    /// A flank from arc length s0 to s1, both on the involute (s >= 0) or
+    /// both on the radial line below it (s <= 0), mirrored across the x axis
+    /// if `mirrored`, then turned by `turn` about the origin. On the
+    /// involute, t is linear in the roll angle phi = tan(a) (s = r_base
+    /// phi^2 / 2), in which the involute is smooth even at the base circle;
+    /// on the radial line, linear in s.
+    Flank { flank: Flank, s0: f64, s1: f64, mirrored: bool, turn: f64 },
+    /// A circular arc from angle a0 to a1 (radians, the short way).
+    Arc { center: P, radius: f64, a0: f64, a1: f64 },
+}
+
+impl Piece {
+    /// The flank from s0 to s1 as one piece, or two if it crosses the base
+    /// circle (the radial line and the involute).
+    pub fn flank(flank: Flank, s0: f64, s1: f64, mirrored: bool) -> Vec<Piece> {
+        let piece = |s0, s1| Piece::Flank { flank, s0, s1, mirrored, turn: 0.0 };
+        if s0.min(s1) < 0.0 && s0.max(s1) > 0.0 {
+            vec![piece(s0, 0.0), piece(0.0, s1)]
+        } else {
+            vec![piece(s0, s1)]
+        }
+    }
+
+    /// The arc about `center` from `start` to `end`, the short way (as
+    /// arc_points draws it).
+    pub fn arc(center: P, start: P, end: P) -> Self {
+        let (ux, uy) = (start.0 - center.0, start.1 - center.1);
+        let (vx, vy) = (end.0 - center.0, end.1 - center.1);
+        let a0 = uy.atan2(ux);
+        let sweep = (ux * vy - uy * vx).atan2(ux * vx + uy * vy);
+        Piece::Arc { center, radius: hypot(ux, uy), a0, a1: a0 + sweep }
+    }
+
+    /// The point at t and its derivative d/dt.
+    pub fn at(&self, t: f64) -> (P, P) {
+        match *self {
+            Piece::Flank { flank, s0, s1, mirrored, turn } => {
+                // s and ds/dt
+                let (s, speed) = if s0 >= 0.0 && s1 >= 0.0 {
+                    let phi = |s: f64| (2.0 * s / flank.r_base).sqrt();
+                    let (p0, p1) = (phi(s0), phi(s1));
+                    let p = p0 + (p1 - p0) * t;
+                    (flank.r_base * p * p / 2.0, flank.r_base * p * (p1 - p0))
+                } else {
+                    (s0 + (s1 - s0) * t, s1 - s0)
+                };
+                let (p, d) = (flank.at(s).0, flank.tangent(s));
+                let d = (d.0 * speed, d.1 * speed);
+                let (p, d) = if mirrored { (mirror(p), mirror(d)) } else { (p, d) };
+                (rotate(p, turn), rotate(d, turn))
+            }
+            Piece::Arc { center, radius, a0, a1 } => {
+                let a = a0 + (a1 - a0) * t;
+                let w = a1 - a0;
+                ((center.0 + radius * a.cos(), center.1 + radius * a.sin()), (-radius * w * a.sin(), radius * w * a.cos()))
+            }
+        }
+    }
+
+    /// The piece turned by `angle` about the origin.
+    pub fn rotated(&self, angle: f64) -> Self {
+        match *self {
+            Piece::Flank { flank, s0, s1, mirrored, turn } => Piece::Flank { flank, s0, s1, mirrored, turn: turn + angle },
+            Piece::Arc { center, radius, a0, a1 } => Piece::Arc { center: rotate(center, angle), radius, a0: a0 + angle, a1: a1 + angle },
+        }
+    }
+}
+
 /// The upper flank (theta > 0) of a shape that is symmetric about angle 0 and
 /// whose thickness at the pitch circle is `thickness` (an arc length). For a
 /// spur gear the shape is a tooth; for a ring gear it is a gap.
@@ -1159,6 +1231,29 @@ impl GearSystem {
         Ok((0..teeth).flat_map(|i| period.iter().map(move |&p| rotate(p, i as f64 * step))).collect())
     }
 
+    /// spur_gear() as exact pieces instead of points, in the same order
+    /// (for STEP files, which hold the true curves).
+    pub fn spur_gear_pieces(&self, teeth: usize) -> Result<Vec<Piece>> {
+        let g = self.spur_profile(teeth)?;
+        let step = 2.0 * PI / teeth as f64;
+        let tip = g.flank.at(g.s_tip).0;
+        let (p_lo, q_lo) = (mirror(g.p), mirror(g.q));
+        let mut period = Vec::new();
+        if g.rho > 0.0 {
+            period.push(Piece::arc(mirror(g.c.unwrap()), q_lo, p_lo)); // lower fillet
+        }
+        period.extend(Piece::flank(g.flank, g.s_p, g.s_tip, true)); // lower flank, outward
+        period.push(Piece::arc((0.0, 0.0), mirror(tip), tip)); // tip land
+        period.extend(Piece::flank(g.flank, g.s_tip, g.s_p, false)); // upper flank, inward
+        if g.rho > 0.0 {
+            period.push(Piece::arc(g.c.unwrap(), g.p, g.q)); // upper fillet
+        }
+        if !g.full_round {
+            period.push(Piece::arc((0.0, 0.0), g.q, rotate(q_lo, step))); // root land
+        }
+        Ok((0..teeth).flat_map(|i| period.iter().map(move |p| p.rotated(i as f64 * step))).collect())
+    }
+
     // --------------------------------------------------------------- ring gear
 
     pub fn ring_profile(&self, teeth: usize) -> Result<Profile> {
@@ -1220,6 +1315,27 @@ impl GearSystem {
         period.extend(g.flank.points(g.s_p, g.s_tip, dev, ds, true)); // upper flank, inward
         period.extend(arc_points((0.0, 0.0), tip, rotate(mirror(tip), step), dev, ds, true)); // tip land
         Ok((0..teeth).flat_map(|i| period.iter().map(move |&p| rotate(p, i as f64 * step))).collect())
+    }
+
+    /// ring_gear() as exact pieces instead of points, in the same order.
+    pub fn ring_gear_pieces(&self, teeth: usize) -> Result<Vec<Piece>> {
+        let g = self.ring_profile(teeth)?;
+        let step = 2.0 * PI / teeth as f64;
+        let tip = g.flank.at(g.s_tip).0;
+        let (p_lo, q_lo) = (mirror(g.p), mirror(g.q));
+        let mut period = Piece::flank(g.flank, g.s_tip, g.s_p, true); // lower flank, outward
+        if g.rho > 0.0 {
+            period.push(Piece::arc(mirror(g.c.unwrap()), p_lo, q_lo)); // lower fillet
+        }
+        if !g.full_round {
+            period.push(Piece::arc((0.0, 0.0), q_lo, g.q)); // root land
+        }
+        if g.rho > 0.0 {
+            period.push(Piece::arc(g.c.unwrap(), g.q, g.p)); // upper fillet
+        }
+        period.extend(Piece::flank(g.flank, g.s_p, g.s_tip, false)); // upper flank, inward
+        period.push(Piece::arc((0.0, 0.0), tip, rotate(mirror(tip), step))); // tip land
+        Ok((0..teeth).flat_map(|i| period.iter().map(move |p| p.rotated(i as f64 * step))).collect())
     }
 
     // ----------------------------------------------------------------- meshing

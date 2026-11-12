@@ -691,6 +691,56 @@ fn set(target: &js_sys::Object, name: &str, value: &JsValue) {
     js_sys::Reflect::set(target, &JsValue::from_str(name), value).unwrap();
 }
 
+/// The exact solids for a STEP file, as an assembly whose instances are in
+/// the order and places of build_parts()'s meshes.
+pub fn build_assembly(o: &Options) -> Result<crate::gear_step::Assembly, GearError> {
+    use crate::gear_step::{planetary_assembly, ring_gear_solid, spur_gear_solid, Assembly};
+    let (s, at_toe, end_bottom, end_top) = gear_set(o, false)?;
+    Ok(match o.kind.as_str() {
+        "spur" => Assembly::single("spur gear", spur_gear_solid(&s, whole(o.teeth, "Teeth")?, o.width, o.bore, o.hand, end_bottom, end_top)?),
+        "ring" => Assembly::single("ring gear", ring_gear_solid(&s, whole(o.ring_teeth, "Teeth")?, o.width, o.rim, o.hand, end_bottom, end_top)?),
+        "planetary" => planetary_assembly(
+            &s,
+            whole(o.sun_teeth, "Sun teeth")?,
+            whole(o.planet_teeth, "Planet teeth")?,
+            whole(o.planets, "Planets")?,
+            o.width,
+            o.rim,
+            o.bore,
+            o.planet_bore,
+            o.hand,
+            end_bottom,
+            end_top,
+        )?,
+        "bevel" => crate::bevel_step::bevel_pair_assembly(
+            &s,
+            [whole(o.teeth, "Gear 1 teeth")?, whole(o.teeth2, "Gear 2 teeth")?],
+            o.shaft_angle * PI / 180.0,
+            o.face_width,
+            [o.bore, o.bore2],
+            o.hand,
+            at_toe,
+            o.layout.as_deref() != Some("print"),
+        )?,
+        other => return Err(GearError(format!("Unknown gear type {:?}.", other))),
+    })
+}
+
+/// A STEP file for the page: { text } or { error }.
+#[wasm_bindgen]
+pub fn build_step(options: JsValue) -> JsValue {
+    console_error_panic_hook::set_once();
+    let result = js_sys::Object::new();
+    match serde_wasm_bindgen::from_value::<Options>(options) {
+        Err(e) => set(&result, "error", &JsValue::from_str(&format!("Bad options: {}", e))),
+        Ok(o) => match build_assembly(&o) {
+            Err(e) => set(&result, "error", &JsValue::from_str(&e.0)),
+            Ok(a) => set(&result, "text", &JsValue::from_str(&a.step(&format!("{}_gear", o.kind)))),
+        },
+    }
+    result.into()
+}
+
 /// Entry point for the page: see the module documentation.
 #[wasm_bindgen]
 pub fn build(options: JsValue) -> JsValue {

@@ -186,7 +186,8 @@ fieldset { position: relative; }
   margin: -4px 0 8px;
 }
 
-.actions { display: flex; gap: 8px; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; } /* the downloads go to a second line when narrow */
+.actions button { flex: 1 1 auto; }
 
 button {
   flex: 1;
@@ -203,9 +204,9 @@ button {
 button#generate.state { background: transparent; color: var(--muted); border-color: var(--border); cursor: default; }
 button#generate.state.done { color: var(--ok); }
 button#generate.state.failed { color: var(--error); }
-button#download { background: transparent; color: var(--accent); }
+button#download, button#download-step { background: transparent; color: var(--accent); }
 button:disabled { cursor: default; }
-button#download:disabled { opacity: 0.5; }
+button#download:disabled, button#download-step:disabled { opacity: 0.5; }
 
 .status { color: var(--muted); min-height: 3em; white-space: pre-line; margin: 8px 0 0; }
 

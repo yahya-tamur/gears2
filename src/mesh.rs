@@ -1,4 +1,4 @@
-//! Meshes: closed triangle meshes of gears, written as STL.
+//! Meshes: closed triangle meshes of gears (written as STL by `stl`).
 //!
 //! All lengths are in mm and all angles in radians.
 //!
@@ -73,7 +73,7 @@ impl IndexedMesh {
         self.triangles.push([i, j, k]);
     }
 
-    fn normal(&self, t: [usize; 3]) -> [f64; 3] {
+    pub(crate) fn normal(&self, t: [usize; 3]) -> [f64; 3] {
         let (a, b, c) = (self.vertices[t[0]], self.vertices[t[1]], self.vertices[t[2]]);
         let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
         let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
@@ -145,33 +145,6 @@ impl IndexedMesh {
             out.push("the volume is not positive (normals point inward)".to_string());
         }
         out
-    }
-
-    /// The mesh as a binary STL file.
-    pub fn stl_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(84 + 50 * self.triangles.len());
-        out.extend_from_slice(&[0u8; 80]);
-        out.extend_from_slice(&(self.triangles.len() as u32).to_le_bytes());
-        for &t in &self.triangles {
-            let n = self.normal(t);
-            let length = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
-            let length = if length == 0.0 { 1.0 } else { length };
-            for c in n {
-                out.extend_from_slice(&((c / length) as f32).to_le_bytes());
-            }
-            for i in t {
-                for c in self.vertices[i] {
-                    out.extend_from_slice(&(c as f32).to_le_bytes());
-                }
-            }
-            out.extend_from_slice(&[0u8; 2]);
-        }
-        out
-    }
-
-    /// Write a binary STL.
-    pub fn save_stl(&self, path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
-        std::fs::write(path, self.stl_bytes())
     }
 }
 
@@ -865,7 +838,7 @@ impl EndZones {
     }
 }
 
-fn check_common(width: f64, hand: i32, end_bottom: f64, end_top: f64) -> Result<()> {
+pub(crate) fn check_common(width: f64, hand: i32, end_bottom: f64, end_top: f64) -> Result<()> {
     if !(width > 0.0) {
         return Err(GearError("The face width must be positive.".into()));
     }
@@ -904,15 +877,8 @@ pub fn spur_gear_mesh(s: &GearSystem, teeth: usize, width: f64, bore: f64, hand:
     let zones = EndZones::new(s, teeth, width, end_bottom, end_top, hand, false);
     let has_ends = end_bottom > 0.0 || end_top > 0.0;
     let mut loops = vec![s.spur_gear(teeth)?];
+    check_bore(s, &zones, bore, has_ends)?;
     if bore > 0.0 {
-        let limit = if has_ends { zones.r_fold } else { zones.r_root };
-        if bore / 2.0 > limit - 2.0 * s.ds {
-            return Err(GearError(if has_ends {
-                format!("The bore ({} mm) must be smaller than the flat face the end chamfers leave ({:.3} mm).", bore, 2.0 * zones.r_fold)
-            } else {
-                format!("The bore ({} mm) must be smaller than the bottom of the tooth gaps ({:.3} mm across).", bore, 2.0 * zones.r_root)
-            }));
-        }
         let mut hole = s.circle(bore / 2.0, true)?;
         hole.reverse(); // holes go clockwise
         loops.push(hole);
@@ -932,6 +898,32 @@ pub fn ring_gear_mesh(s: &GearSystem, teeth: usize, width: f64, rim: f64, hand: 
     check_common(width, hand, end_bottom, end_top)?;
     let zones = EndZones::new(s, teeth, width, end_bottom, end_top, hand, true);
     let has_ends = end_bottom > 0.0 || end_top > 0.0;
+    check_rim(s, &zones, rim, has_ends)?;
+    // The rim's material is inside its circle: points on the circle, chords inside.
+    let mut toothed = s.ring_gear(teeth)?;
+    toothed.reverse();
+    let loops = vec![s.circle(rim / 2.0, false)?, toothed];
+    let r_max = zones.r_root;
+    gear_solid(s, teeth, &zones, loops, 1, has_ends, r_max)
+}
+
+/// A spur gear's bore (diameter, 0 for none) must leave its flat face (or
+/// the gap bottoms) a margin.
+pub(crate) fn check_bore(s: &GearSystem, zones: &EndZones, bore: f64, has_ends: bool) -> Result<()> {
+    let limit = if has_ends { zones.r_fold } else { zones.r_root };
+    if bore > 0.0 && bore / 2.0 > limit - 2.0 * s.ds {
+        return Err(GearError(if has_ends {
+            format!("The bore ({} mm) must be smaller than the flat face the end chamfers leave ({:.3} mm).", bore, 2.0 * zones.r_fold)
+        } else {
+            format!("The bore ({} mm) must be smaller than the bottom of the tooth gaps ({:.3} mm across).", bore, 2.0 * zones.r_root)
+        }));
+    }
+    Ok(())
+}
+
+/// A ring's outer diameter must clear its flat face (or its root circle) by
+/// a margin.
+pub(crate) fn check_rim(s: &GearSystem, zones: &EndZones, rim: f64, has_ends: bool) -> Result<()> {
     let limit = if has_ends { zones.r_fold } else { zones.r_root };
     if rim / 2.0 < limit + 2.0 * s.ds {
         return Err(GearError(if has_ends {
@@ -940,12 +932,7 @@ pub fn ring_gear_mesh(s: &GearSystem, teeth: usize, width: f64, rim: f64, hand: 
             format!("The ring's outer diameter ({} mm) must be larger than the bottom of its tooth gaps (the root circle, {:.3} mm across).", rim, 2.0 * zones.r_root)
         }));
     }
-    // The rim's material is inside its circle: points on the circle, chords inside.
-    let mut toothed = s.ring_gear(teeth)?;
-    toothed.reverse();
-    let loops = vec![s.circle(rim / 2.0, false)?, toothed];
-    let r_max = zones.r_root;
-    gear_solid(s, teeth, &zones, loops, 1, has_ends, r_max)
+    Ok(())
 }
 
 /// Shared by spur_gear_mesh() and ring_gear_mesh(). loops: the face's

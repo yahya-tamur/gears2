@@ -3,6 +3,7 @@
 
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { stlBlob } from "./stl.js";
 
 // ------------------------------------------------------------------ options
 //
@@ -378,6 +379,9 @@ function setAuto(name, on, fire = true) {
 const form = document.getElementById("options");
 const generate = document.getElementById("generate");
 const download = document.getElementById("download");
+const downloadStep = document.getElementById("download-step");
+let buildingParams = null; // the settings of the build in progress (kept for a STEP file)
+let makingStep = false;
 const statusLine = document.getElementById("status");
 const errorBox = document.getElementById("error");
 const restoreButton = document.getElementById("restore");
@@ -566,6 +570,7 @@ function setStatus(text, isError = false) {
   // Only download what the current settings make (the preview may still
   // show the last values that worked).
   download.disabled = isError || !current;
+  updateStepButton(isError);
   form.classList.toggle("show-set", isError);
   if (isError) {
     errorBox.textContent = text;
@@ -854,31 +859,6 @@ function frame() {
   placeCamera(Number(fovInput.value), 0.9, new THREE.Vector3(0.6, -1.1, 0.8));
 }
 
-// ---------------------------------------------------------------------- STL
-
-function stlBlob(parts) {
-  const count = parts.reduce((n, p) => n + p.indices.length / 3, 0);
-  const buffer = new ArrayBuffer(84 + 50 * count);
-  const view = new DataView(buffer);
-  view.setUint32(80, count, true);
-  let offset = 84;
-  for (const { positions: P, indices: I } of parts) {
-    for (let t = 0; t < I.length; t += 3) {
-      const a = I[t] * 3, b = I[t + 1] * 3, c = I[t + 2] * 3;
-      const ux = P[b] - P[a], uy = P[b + 1] - P[a + 1], uz = P[b + 2] - P[a + 2];
-      const vx = P[c] - P[a], vy = P[c + 1] - P[a + 1], vz = P[c + 2] - P[a + 2];
-      const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
-      const len = Math.hypot(nx, ny, nz) || 1;
-      for (const value of [nx / len, ny / len, nz / len]) { view.setFloat32(offset, value, true); offset += 4; }
-      for (const i of [a, b, c]) {
-        for (let k = 0; k < 3; k++) { view.setFloat32(offset, P[i + k], true); offset += 4; }
-      }
-      offset += 2;
-    }
-  }
-  return new Blob([buffer], { type: "model/stl" });
-}
-
 // ------------------------------------------------------------- generating
 //
 // Every change starts a new build (after a short pause in typing). If a
@@ -925,6 +905,7 @@ function requestBuild() {
   requestId += 1;
   startedAt = performance.now();
   setButton("building");
+  buildingParams = read.params;
   worker.postMessage({ id: requestId, params: read.params });
 }
 
@@ -1233,6 +1214,10 @@ worker.onmessage = (event) => {
     setStatus("Couldn't load the gear generator: " + msg.message, true);
     return;
   }
+  if (msg.type === "step") {
+    stepDone(msg);
+    return;
+  }
   if (msg.id !== requestId) return;
   const seconds = (performance.now() - startedAt) / 1000;
   if (msg.type === "error") {
@@ -1241,7 +1226,7 @@ worker.onmessage = (event) => {
     return;
   }
   const kind = inputs.kind.value;
-  current = { parts: msg.parts, kind };
+  current = { parts: msg.parts, kind, params: buildingParams };
   show(msg.parts, kind, msg.info);
   download.disabled = false;
   const i = msg.info;
@@ -1253,15 +1238,38 @@ worker.onmessage = (event) => {
   finished(seconds);
 };
 
-download.addEventListener("click", () => {
-  if (!current) return;
-  const url = URL.createObjectURL(stlBlob(current.parts));
+function saveFile(blob, name) {
+  const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `${current.kind}_gear.stl`;
+  a.download = name;
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+download.addEventListener("click", () => {
+  if (current) saveFile(stlBlob(current.parts), `${current.kind}_gear.stl`);
 });
+
+// STEP files hold the exact solids (see src/step.rs): made by the worker on
+// request, from the settings of the gears on view.
+function updateStepButton(isError = false) {
+  downloadStep.disabled = isError || !current || makingStep;
+  downloadStep.title = "The exact solids, for CAD programs";
+  downloadStep.textContent = makingStep ? "Making STEP…" : "Download STEP";
+}
+downloadStep.addEventListener("click", () => {
+  if (!current || makingStep) return;
+  makingStep = true;
+  updateStepButton();
+  worker.postMessage({ id: 0, params: current.params, step: true, kind: current.kind });
+});
+function stepDone(msg) {
+  makingStep = false;
+  updateStepButton(!errorBox.hidden);
+  if (msg.text) saveFile(new Blob([msg.text], { type: "model/step" }), `${current.kind}_gear.step`);
+  else statusLine.textContent = msg.message;
+}
 
 // ---------------------------------------------------------- settings files
 //
