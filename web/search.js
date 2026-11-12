@@ -61,7 +61,7 @@
 // (The exhaustive search logs a code instead of a score: 0 works, 1 fails a
 // check, 2 makes no gear set.)
 
-import init, { search_begin, search_score, search_exhaustive, search_take_log } from "./pkg/gears2.js";
+import init, { search_begin, search_score, search_exhaustive, search_take_log, spacing_fix } from "./pkg/gears2.js";
 
 // values only their own check depends on: settled, never searched (the same
 // list as SOLVED in web.rs)
@@ -332,11 +332,25 @@ function search(params, allFree, id, logging) {
   return { found: true, values, evals, searched: chosen.map((f) => f.name), log: logs() };
 }
 
+// The point spacing changes nothing about the gears but whether the mesh
+// has room for two points on every land and root rounding, so the search
+// leaves it out. Then, if it's free and too large for the result, it's
+// lowered straight to the largest that fits (spacing_fix in Rust).
+function withSpacing(result, params, free) {
+  const k = free.findIndex((f) => f.name === "ds");
+  if (!result.found || k < 0) return result;
+  const p = { ...params };
+  free.forEach((f, i) => { p[f.name] = result.values[i]; });
+  const most = spacing_fix(p);
+  if (Number.isFinite(most)) result.values[k] = most;
+  return result;
+}
+
 self.onmessage = async (event) => {
   const { id, params, free, log } = event.data;
   await ready;
   try {
-    const result = search(params, free, id, log);
+    const result = withSpacing(search(params, free, id, log), params, free);
     self.postMessage({ type: "done", id, ...result }, result.log ? [result.log.rows.buffer] : []);
   } catch (e) {
     self.postMessage({ type: "done", id, found: false, evals: 0, failed: String(e) });

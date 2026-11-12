@@ -369,6 +369,15 @@ impl SphPiece {
         }
     }
 
+    /// A small circle's length on the unit sphere (lands, root roundings);
+    /// None for a flank.
+    pub fn arc_length(&self) -> Option<f64> {
+        match *self {
+            SphPiece::Circle { center, start, sweep } => Some(sweep.abs() * angle(center, start).sin()),
+            SphPiece::Flank { .. } => None,
+        }
+    }
+
     pub fn rotated(&self, angle: f64) -> SphPiece {
         match *self {
             SphPiece::Flank { flank, s0, s1, mirrored, turn } => SphPiece::Flank { flank, s0, s1, mirrored, turn: turn + angle },
@@ -427,6 +436,28 @@ impl BevelPair {
     /// The pair from a gear set. backlash_at_toe: the gear set's backlash is
     /// the play at the toe (the smallest) instead of at the heel.
     pub fn new(s: &GearSystem, teeth: [usize; 2], shaft_angle: f64, face: f64, backlash_at_toe: bool) -> Result<Self> {
+        let pair = Self::with_fillets(s, teeth, shaft_angle, face, backlash_at_toe)?;
+        // Every tooth tip, gap bottom and root rounding needs room for two
+        // mesh points ds apart at the toe; the shape doesn't depend on ds, so
+        // a ds too large is an error.
+        let toe = pair.r_cone - pair.face;
+        for i in 0..2 {
+            let shortest = pair.shortest_arc(i);
+            if shortest < 2.0 * pair.ds {
+                return err(format!(
+                    "The smallest point spacing ({} mm) is too large for {}'s teeth: every tooth tip, gap bottom \
+                     and root rounding needs room for two points that far apart at the inner end. Use at most {:.3} mm.",
+                    s.ds,
+                    ["gear 1", "gear 2"][i],
+                    (shortest * toe / 2.0 * 1000.0).floor() / 1000.0
+                ));
+            }
+        }
+        Ok(pair)
+    }
+
+    /// new() without its point spacing check (see spacing_shortfall).
+    pub fn with_fillets(s: &GearSystem, teeth: [usize; 2], shaft_angle: f64, face: f64, backlash_at_toe: bool) -> Result<Self> {
         let mut pair = Self::checked(s, teeth, shaft_angle, face, backlash_at_toe)?;
         for i in 0..2 {
             pair.choose_fillet(i, s);
@@ -505,7 +536,7 @@ impl BevelPair {
             dev: s.max_deviation / r_cone,
             fillet_dev: s.fillet_deviation / r_cone,
             ds: s.ds / (r_cone - face),
-            min_land: MIN_LAND.max(2.0 * s.ds) / (r_cone - face),
+            min_land: MIN_LAND / (r_cone - face),
             gears: [make(teeth[0], d1)?, make(teeth[1], d2)?],
         };
         pair.check()?;
@@ -811,11 +842,11 @@ impl BevelPair {
             Some((remaining, sol))
         };
         let sharp = (0.0, s_corner, corner, None, corner, false);
-        let ds = self.ds;
+        let shortest_arc = self.min_land;
         let keep = |choice: (f64, f64, V, Option<V>, V, bool)| {
             let (rho, _, p, c, q, _) = choice;
             let c = c.unwrap();
-            if rho * angle(sub(p, scale(c, dot(p, c))), sub(q, scale(c, dot(q, c)))) >= 2.0 * ds {
+            if rho * angle(sub(p, scale(c, dot(p, c))), sub(q, scale(c, dot(q, c)))) >= shortest_arc {
                 choice
             } else {
                 sharp
@@ -880,6 +911,20 @@ impl BevelPair {
             period.extend(sph_arc(pole, g.q, rot_z(q_lo, step), dev, ds, false));
         }
         (0..g.teeth).flat_map(|i| period.iter().map(move |&p| rot_z(p, i as f64 * step))).collect()
+    }
+
+    /// Gear `which`'s shortest land or root rounding (an angle on the unit
+    /// sphere: times the toe's cone distance for mm at the inner end).
+    pub fn shortest_arc(&self, which: usize) -> f64 {
+        let per = self.outline_pieces(which).len() / self.gears[which].teeth;
+        self.outline_pieces(which).iter().take(per).filter_map(SphPiece::arc_length).fold(f64::INFINITY, f64::min)
+    }
+
+    /// How far the point spacing is from fitting both gears' lands and root
+    /// roundings at the toe, in mm (0 when it fits). For badness().
+    pub fn spacing_shortfall(&self) -> f64 {
+        let toe = self.r_cone - self.face;
+        (0..2).map(|i| (2.0 * self.ds - self.shortest_arc(i)).max(0.0) * toe).fold(0.0, f64::max)
     }
 
     /// Polar angle of gear `which`'s fold circle: module / 4 inside the root

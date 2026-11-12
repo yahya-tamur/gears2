@@ -65,8 +65,9 @@ pub type PlanetaryLayout = (usize, Vec<(P, f64)>, f64);
 
 pub type P = (f64, f64);
 
-/// Shortest tip or root land kept, in mm (or 2 * ds, if that is longer: see
-/// GearSystem::min_land). A root land that would be shorter becomes a fully
+/// Shortest tip or root land kept, in mm (see GearSystem::min_land). The
+/// mesh needs more (two points ds apart on every land: see
+/// GearSystem::check_spacing), which is an error, not a change of shape. A root land that would be shorter becomes a fully
 /// rounded root; a tooth count that would give a shorter tip land (or root
 /// gap) is below the system's minimum. It only exists to keep the geometry
 /// from degenerating (near-coincident points, zero-width features); it is far
@@ -265,6 +266,14 @@ impl Piece {
                 let w = a1 - a0;
                 ((center.0 + radius * a.cos(), center.1 + radius * a.sin()), (-radius * w * a.sin(), radius * w * a.cos()))
             }
+        }
+    }
+
+    /// An arc's length (tip and root lands, root roundings); None for a flank.
+    pub fn arc_length(&self) -> Option<f64> {
+        match *self {
+            Piece::Arc { radius, a0, a1, .. } => Some(radius * (a1 - a0).abs()),
+            Piece::Flank { .. } => None,
         }
     }
 
@@ -605,14 +614,13 @@ pub struct GearSystem {
 
 impl GearSystem {
     pub fn new(params: &Params) -> Result<Self> {
-        Self::create(params, MAX_TEETH, true)
+        Self::create(params, MAX_TEETH)
     }
 
-    /// new(), but searching the minimum tooth counts only up to teeth_limit
-    /// and without working out which value to blame when none is found: fast
-    /// even for hopeless parameters (for searching parameters).
+    /// new(), but searching the minimum tooth counts only up to teeth_limit:
+    /// fast even for hopeless parameters (for searching parameters).
     pub fn new_quick(params: &Params, teeth_limit: usize) -> Result<Self> {
-        Self::create(params, teeth_limit, false)
+        Self::create(params, teeth_limit)
     }
 
     /// Whether new_quick(params, teeth_limit) makes a gear set in which these
@@ -629,16 +637,12 @@ impl GearSystem {
         spur_ok(spur) && ring_ok(ring.unwrap_or(teeth_limit))
     }
 
-    fn create(params: &Params, teeth_limit: usize, blame: bool) -> Result<Self> {
+    fn create(params: &Params, teeth_limit: usize) -> Result<Self> {
         let mut system = Self::checked(params, teeth_limit)?;
-        match system.minimums() {
-            Ok((spur, ring)) => {
-                system.min_spur_teeth = spur;
-                system.min_ring_teeth = ring;
-                Ok(system)
-            }
-            Err(e) => Err(if blame { system.blame_spacing().unwrap_or(e) } else { e }),
-        }
+        let (spur, ring) = system.minimums()?;
+        system.min_spur_teeth = spur;
+        system.min_ring_teeth = ring;
+        Ok(system)
     }
 
     /// The gear set with every check but the tooth minimums (left 0).
@@ -706,7 +710,7 @@ impl GearSystem {
             backlash,
             max_deviation,
             ds,
-            min_land: MIN_LAND.max(2.0 * ds),
+            min_land: MIN_LAND,
             helix_angle,
             clearance,
             fillet_deviation,
@@ -724,38 +728,32 @@ impl GearSystem {
         Ok((spur, (3 * spur).max(ring)))
     }
 
-    /// When no tooth count works only because the point spacing is large
-    /// (every tooth tip and gap bottom needs room for two points, ds apart:
-    /// min_land = 2 ds), a message saying so, with the largest spacing that
-    /// would work (found by bisection).
-    fn blame_spacing(&self) -> Option<GearError> {
-        if self.min_land <= MIN_LAND {
-            return None;
+    /// Every tooth tip, gap bottom and root rounding of a gear needs room for
+    /// two mesh points ds apart. The shape itself doesn't depend on ds (its
+    /// lands only need MIN_LAND), so a ds too large for a gear's shortest
+    /// such piece (`lengths`, in mm) is an error, naming the largest that
+    /// works.
+    /// How far the point spacing is from fitting a spur gear (or ring) with
+    /// `teeth`: 2 ds less its shortest land or root rounding, in mm (0 when it
+    /// fits, or when the tooth count doesn't work at all). For badness().
+    pub fn spacing_shortfall(&self, teeth: usize, ring: bool) -> f64 {
+        let period = if ring { self.ring_period(teeth) } else { self.spur_period(teeth) };
+        let Ok(period) = period else { return 0.0 };
+        let shortest = period.iter().filter_map(Piece::arc_length).fold(f64::INFINITY, f64::min);
+        (2.0 * self.ds - shortest).max(0.0)
+    }
+
+    fn check_spacing(&self, lengths: &[f64]) -> Result<()> {
+        let shortest = lengths.iter().copied().fold(f64::INFINITY, f64::min);
+        if shortest < 2.0 * self.ds {
+            return err(format!(
+                "The smallest point spacing ({} mm) is too large for these teeth: every tooth tip, gap \
+                 bottom and root rounding needs room for two points that far apart. Use at most {:.3} mm.",
+                self.ds,
+                (shortest / 2.0 * 1000.0).floor() / 1000.0
+            ));
         }
-        let with_spacing = |ds: f64| {
-            let mut s = self.clone();
-            s.ds = ds;
-            s.min_land = MIN_LAND.max(2.0 * ds);
-            s.minimums().is_ok()
-        };
-        if !with_spacing(MIN_LAND / 2.0) {
-            return None; // something else is wrong too
-        }
-        let (mut lo, mut hi) = (MIN_LAND / 2.0, self.ds);
-        for _ in 0..40 {
-            let mid = (lo + hi) / 2.0;
-            if with_spacing(mid) {
-                lo = mid;
-            } else {
-                hi = mid;
-            }
-        }
-        Some(GearError(format!(
-            "The smallest point spacing ({} mm) is too large for these teeth: every tooth tip and \
-             every gap bottom needs room for two points that far apart. Use at most {:.3} mm.",
-            self.ds,
-            (lo * 1000.0).floor() / 1000.0
-        )))
+        Ok(())
     }
 
     pub fn module(&self) -> f64 {
@@ -1125,7 +1123,7 @@ impl GearSystem {
             let c = c.unwrap();
             let (ux, uy, vx, vy) = (p.0 - c.0, p.1 - c.1, q.0 - c.0, q.1 - c.1);
             let sweep = (ux * vy - uy * vx).atan2(ux * vx + uy * vy).abs();
-            if rho * sweep >= 2.0 * self.ds {
+            if rho * sweep >= self.min_land {
                 choice
             } else {
                 sharp
@@ -1209,6 +1207,7 @@ impl GearSystem {
     /// counterclockwise, as a list of (x, y) with no repeated end point.
     /// Tooth 0 is centered on the +x axis.
     pub fn spur_gear(&self, teeth: usize) -> Result<Vec<P>> {
+        self.spur_gear_pieces(teeth)?; // checks the point spacing
         let g = self.spur_profile(teeth)?;
         let (dev, ds, step) = (self.max_deviation, self.ds, 2.0 * PI / teeth as f64);
         let fdev = self.fillet_deviation;
@@ -1234,6 +1233,14 @@ impl GearSystem {
     /// spur_gear() as exact pieces instead of points, in the same order
     /// (for STEP files, which hold the true curves).
     pub fn spur_gear_pieces(&self, teeth: usize) -> Result<Vec<Piece>> {
+        let period = self.spur_period(teeth)?;
+        self.check_spacing(&period.iter().filter_map(Piece::arc_length).collect::<Vec<_>>())?;
+        let step = 2.0 * PI / teeth as f64;
+        Ok((0..teeth).flat_map(|i| period.iter().map(move |p| p.rotated(i as f64 * step))).collect())
+    }
+
+    /// One tooth's pieces of spur_gear_pieces() (tooth 0).
+    fn spur_period(&self, teeth: usize) -> Result<Vec<Piece>> {
         let g = self.spur_profile(teeth)?;
         let step = 2.0 * PI / teeth as f64;
         let tip = g.flank.at(g.s_tip).0;
@@ -1251,7 +1258,7 @@ impl GearSystem {
         if !g.full_round {
             period.push(Piece::arc((0.0, 0.0), g.q, rotate(q_lo, step))); // root land
         }
-        Ok((0..teeth).flat_map(|i| period.iter().map(move |p| p.rotated(i as f64 * step))).collect())
+        Ok(period)
     }
 
     // --------------------------------------------------------------- ring gear
@@ -1296,6 +1303,7 @@ impl GearSystem {
     /// the origin, counterclockwise, as a list of (x, y) with no repeated end
     /// point. Gap 0 is centered on the +x axis.
     pub fn ring_gear(&self, teeth: usize) -> Result<Vec<P>> {
+        self.ring_gear_pieces(teeth)?; // checks the point spacing
         let g = self.ring_profile(teeth)?;
         let (dev, ds, step) = (self.max_deviation, self.ds, 2.0 * PI / teeth as f64);
         let fdev = self.fillet_deviation;
@@ -1319,6 +1327,14 @@ impl GearSystem {
 
     /// ring_gear() as exact pieces instead of points, in the same order.
     pub fn ring_gear_pieces(&self, teeth: usize) -> Result<Vec<Piece>> {
+        let period = self.ring_period(teeth)?;
+        self.check_spacing(&period.iter().filter_map(Piece::arc_length).collect::<Vec<_>>())?;
+        let step = 2.0 * PI / teeth as f64;
+        Ok((0..teeth).flat_map(|i| period.iter().map(move |p| p.rotated(i as f64 * step))).collect())
+    }
+
+    /// One tooth's pieces of ring_gear_pieces() (gap 0).
+    fn ring_period(&self, teeth: usize) -> Result<Vec<Piece>> {
         let g = self.ring_profile(teeth)?;
         let step = 2.0 * PI / teeth as f64;
         let tip = g.flank.at(g.s_tip).0;
@@ -1335,7 +1351,7 @@ impl GearSystem {
         }
         period.extend(Piece::flank(g.flank, g.s_p, g.s_tip, false)); // upper flank, inward
         period.push(Piece::arc((0.0, 0.0), tip, rotate(mirror(tip), step))); // tip land
-        Ok((0..teeth).flat_map(|i| period.iter().map(move |p| p.rotated(i as f64 * step))).collect())
+        Ok(period)
     }
 
     // ----------------------------------------------------------------- meshing

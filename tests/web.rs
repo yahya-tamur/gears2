@@ -1,6 +1,6 @@
 //! The page's fast check (badness) agrees with actually building.
 
-use gears2::web::{badness, build_parts, limits, tooth_fit_limits, Options};
+use gears2::web::{badness, build_parts, limits, spacing_fix, tooth_fit_limits, Options};
 
 fn options(kind: &str) -> Options {
     Options {
@@ -72,20 +72,33 @@ fn random_options(rng: &mut Lcg, kind: &str) -> Options {
     o
 }
 
+/// badness() leaves the point spacing out (it changes nothing but whether
+/// the mesh fits): it's 0 exactly when the build works with the spacing
+/// spacing_fix() gives (or the options' own, if that fits). A too-large
+/// spacing is the only thing spacing_fix changes, and it then works.
 #[test]
 fn badness_is_zero_exactly_when_the_build_works() {
     let mut rng = Lcg(7);
-    let (mut agree, mut valid) = (0, 0);
+    let (mut agree, mut valid, mut fixed) = (0, 0, 0);
     for k in 0..240 {
         let kind = ["spur", "ring", "planetary", "bevel"][k % 4];
-        let o = random_options(&mut rng, kind);
+        let mut o = random_options(&mut rng, kind);
         let b = badness(&o);
+        if let Some(ds) = spacing_fix(&o) {
+            // (with other problems too, the build may name one of those first)
+            let e = build_parts(&o).err().map(|e| e.0).unwrap_or_default();
+            assert!(b > 0.0 || e.contains("smallest point spacing"), "{kind}: spacing_fix gives {ds}, but the build says {e:?}");
+            assert!(ds < o.ds);
+            o.ds = ds;
+            fixed += 1;
+        }
         let built = build_parts(&o);
         assert_eq!(b == 0.0, built.is_ok(), "{} options: badness {} but build {:?}", kind, b, built.as_ref().err());
         agree += 1;
         valid += built.is_ok() as usize;
     }
     assert!(valid > 20 && valid < agree - 20, "{} of {} valid: the sample should have both", valid, agree);
+    assert!(fixed > 0, "no spacing was too large: the sample should have some");
 }
 
 /// Each limit is exact for its own check: at the limit the value passes it,

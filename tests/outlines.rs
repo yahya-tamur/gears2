@@ -221,8 +221,27 @@ fn outlines_at_minimum_tooth_counts() {
                 Err(e) => assert!(e.0.contains("can't make") || e.0.contains("too short"), "{}", e.0),
                 Ok(s) => {
                     let label = format!("{} deg, height {}", degrees, height);
-                    check_outline(&s, &s.spur_gear(s.min_spur_teeth).unwrap(), &label);
-                    check_outline(&s, &s.ring_gear(s.min_ring_teeth).unwrap(), &label);
+                    // At the minimums a land can be too short for this point
+                    // spacing (an error naming the spacing that works); then
+                    // check with that spacing.
+                    let fitted = |outline: Result<Vec<(f64, f64)>, gears2::gears::GearError>, ring: bool| -> (GearSystem, Vec<(f64, f64)>) {
+                        match outline {
+                            Ok(o) => (s.clone(), o),
+                            Err(e) => {
+                                assert!(e.0.contains("smallest point spacing"), "{}: {}", label, e.0);
+                                let most: f64 = e.0.rsplit("at most ").next().unwrap().trim_end_matches(" mm.").parse().unwrap();
+                                let mut q = p;
+                                q.ds = most;
+                                let t = GearSystem::new(&q).unwrap();
+                                let o = if ring { t.ring_gear(t.min_ring_teeth) } else { t.spur_gear(t.min_spur_teeth) };
+                                (t, o.unwrap())
+                            }
+                        }
+                    };
+                    let (t, o) = fitted(s.spur_gear(s.min_spur_teeth), false);
+                    check_outline(&t, &o, &label);
+                    let (t, o) = fitted(s.ring_gear(s.min_ring_teeth), true);
+                    check_outline(&t, &o, &label);
                 }
             }
         }
@@ -318,21 +337,26 @@ fn tiny_fillet_is_an_error() {
 }
 
 #[test]
-fn min_land_follows_ds() {
-    let s = with(|p| p.ds = 0.05);
-    assert_eq!(s.min_land, MIN_LAND.max(0.1));
+fn min_land_ignores_ds() {
+    let s = with(|p| p.ds = 0.4);
+    assert_eq!(s.min_land, MIN_LAND);
 }
 
-/// A point spacing too large for the tooth tips is reported as such, with
-/// the largest spacing that works (which then does work).
+/// The point spacing doesn't change the gear set (its minimum tooth
+/// counts) or a gear's shape; a spacing too large for a gear's lands is an
+/// error when that gear is made, naming the largest that works (which then
+/// does work).
 #[test]
 fn too_large_point_spacing_is_named() {
+    let small = GearSystem::new(&base()).unwrap();
     let mut p = base();
     p.ds = 1.05;
-    let e = error_of(p);
+    let s = GearSystem::new(&p).unwrap();
+    assert_eq!((s.min_spur_teeth, s.min_ring_teeth), (small.min_spur_teeth, small.min_ring_teeth));
+    let e = s.spur_gear(s.min_spur_teeth).unwrap_err().0;
     assert!(e.contains("smallest point spacing") && e.contains("Use at most"), "{}", e);
     let most: f64 = e.rsplit("at most ").next().unwrap().trim_end_matches(" mm.").parse().unwrap();
-    assert!(most > 0.05 && most < 1.05);
+    assert!(most > 0.0 && most < 1.05);
     p.ds = most;
-    GearSystem::new(&p).unwrap();
+    GearSystem::new(&p).unwrap().spur_gear(s.min_spur_teeth).unwrap();
 }

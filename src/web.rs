@@ -195,12 +195,12 @@ pub(crate) fn fit_badness(o: &Options, s: &GearSystem, at_toe: bool, eb: f64, et
         "spur" => {
             let Some(z) = whole_or(o.teeth) else { return HARD };
             let z = z.max(3);
-            short(z, s.min_spur_teeth) + bore_over(z, o.bore) + spacing(s, z, false)
+            short(z, s.min_spur_teeth) + bore_over(z, o.bore)
         }
         "ring" => {
             let Some(z) = whole_or(o.ring_teeth) else { return HARD };
             let z = z.max(3);
-            short(z, s.min_ring_teeth) + rim_under(z) + spacing(s, z, true)
+            short(z, s.min_ring_teeth) + rim_under(z)
         }
         "planetary" => {
             let (Some(zs), Some(zp), Some(n)) = (whole_or(o.sun_teeth), whole_or(o.planet_teeth), whole_or(o.planets)) else {
@@ -220,7 +220,6 @@ pub(crate) fn fit_badness(o: &Options, s: &GearSystem, at_toe: bool, eb: f64, et
                 v += (s.clearance - gap).max(0.0);
             }
             v + bore_over(zs, o.bore) + bore_over(zp, o.planet_bore) + rim_under(zr)
-                + spacing(s, zs, false).max(spacing(s, zp, false)).max(spacing(s, zr, true))
         }
         "bevel" => {
             let (Some(z1), Some(z2)) = (whole_or(o.teeth), whole_or(o.teeth2)) else { return HARD };
@@ -231,57 +230,47 @@ pub(crate) fn fit_badness(o: &Options, s: &GearSystem, at_toe: bool, eb: f64, et
             for (i, bore) in [o.bore, o.bore2].into_iter().enumerate() {
                 v += ((bore - largest_bevel_bore(s, &pair, i)) / 2.0).max(0.0) * (bore > 0.0) as i32 as f64;
             }
-            v + bevel_spacing(o, s, [z1, z2], at_toe)
+            v
         }
         _ => HARD,
     }
 }
 
-thread_local! {
-    /// spacing() and bevel_spacing() results already worked out (they draw
-    /// the root roundings, which is slow; Search asks for the same ones often).
-    static SPACING: std::cell::RefCell<std::collections::HashMap<Vec<u64>, f64>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
-}
-
-fn remembered(key: Vec<u64>, work: impl FnOnce() -> f64) -> f64 {
-    if let Some(v) = SPACING.with(|c| c.borrow().get(&key).copied()) {
-        return v;
-    }
-    let v = work();
-    SPACING.with(|c| {
-        let mut c = c.borrow_mut();
-        if c.len() > 20000 {
-            c.clear(); // keep memory bounded
+/// The largest point spacing (mm, rounded down to 0.001) that leaves room
+/// for two points on every land and root rounding of the gears these options
+/// make, if the options' spacing is larger; None if it fits (or the gears
+/// can't be made for another reason). The spacing changes nothing else about
+/// the gears, so Search leaves it out and then lowers it to this, when it's
+/// free.
+pub fn spacing_fix(o: &Options) -> Option<f64> {
+    let degrees = PI / 180.0;
+    let (s, at_toe, _, _) = gear_set(o, true).ok()?;
+    let whole = |v: f64| if v.fract() == 0.0 && v >= 3.0 { Some(v as usize) } else { None };
+    // the largest shortfall: 2 ds less the shortest land
+    let short = match o.kind.as_str() {
+        "spur" => s.spacing_shortfall(whole(o.teeth)?, false),
+        "ring" => s.spacing_shortfall(whole(o.ring_teeth)?, true),
+        "planetary" => {
+            let (zs, zp) = (whole(o.sun_teeth)?, whole(o.planet_teeth)?);
+            s.spacing_shortfall(zs, false).max(s.spacing_shortfall(zp, false)).max(s.spacing_shortfall(zs + 2 * zp, true))
         }
-        c.insert(key, v);
-    });
-    v
+        "bevel" => {
+            let pair = BevelPair::with_fillets(&s, [whole(o.teeth)?, whole(o.teeth2)?], o.shaft_angle * degrees, o.face_width, at_toe).ok()?;
+            pair.spacing_shortfall()
+        }
+        _ => return None,
+    };
+    if short <= 0.0 {
+        return None;
+    }
+    let shortest = 2.0 * o.ds - short;
+    Some((shortest / 2.0 * 1000.0).floor() / 1000.0)
 }
 
-/// GearSystem::spacing_shortfall, remembered.
-fn spacing(s: &GearSystem, teeth: usize, ring: bool) -> f64 {
-    let key = vec![
-        s.pitch.to_bits(), s.pressure_angle.to_bits(), s.height.to_bits(), s.backlash.to_bits(), s.clearance.to_bits(),
-        s.fillet_radius.to_bits(), s.fillet_deviation.to_bits(), s.max_deviation.to_bits(), s.ds.to_bits(),
-        s.helix_angle.to_bits(), s.min_spur_teeth as u64, teeth as u64, ring as u64,
-    ];
-    remembered(key, || s.spacing_shortfall(teeth, ring))
-}
-
-/// BevelPair::spacing_shortfall for these options, remembered (HARD if the
-/// pair can't be made).
-fn bevel_spacing(o: &Options, s: &GearSystem, teeth: [usize; 2], at_toe: bool) -> f64 {
-    let key = vec![
-        s.pitch.to_bits(), s.pressure_angle.to_bits(), s.height.to_bits(), s.backlash.to_bits(), s.clearance.to_bits(),
-        s.fillet_radius.to_bits(), s.fillet_deviation.to_bits(), s.max_deviation.to_bits(), s.ds.to_bits(),
-        s.helix_angle.to_bits(), o.shaft_angle.to_bits(), o.face_width.to_bits(), teeth[0] as u64, teeth[1] as u64,
-        at_toe as u64, u64::MAX,
-    ];
-    remembered(key, || match BevelPair::with_fillets(s, teeth, o.shaft_angle * PI / 180.0, o.face_width, at_toe) {
-        Ok(pair) => pair.spacing_shortfall(),
-        Err(_) => 1000.0,
-    })
+/// spacing_fix() for the page: the spacing, or NaN if none is needed.
+#[wasm_bindgen(js_name = spacing_fix)]
+pub fn spacing_fix_js(options: JsValue) -> f64 {
+    serde_wasm_bindgen::from_value::<Options>(options).ok().and_then(|o| spacing_fix(&o)).unwrap_or(f64::NAN)
 }
 
 /// Largest bore (diameter) a spur gear (or the sun or a planet) with this
