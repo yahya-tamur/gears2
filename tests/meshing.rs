@@ -182,3 +182,42 @@ fn planets_must_not_collide() {
     let e = named("20deg", 0.001).planetary_gear(21, 42, 6, 0.0).unwrap_err().0; // 21 + 105 = 126
     assert!(e.contains("don't fit"), "{}", e);
 }
+
+/// The page's spinning view (web/app.js, "Spinning") turns a planetary set
+/// by these formulas: with the ring held, the carrier by sun / (sun + ring)
+/// of the sun's turn and each planet by -(sun / planet) relative to it; with
+/// the carrier held, each planet by -(sun / planet) and the ring by
+/// -(sun / ring). At every angle every planet stays in centered mesh with
+/// the sun and the ring.
+#[test]
+fn spinning_planetary_sets_stay_in_mesh() {
+    let s = named("20deg", 0.001);
+    let (zs, zp, n) = (24, 21, 3);
+    let (zr, layout, ring_rotation) = s.planetary_layout(zs, zp, n, 0.0).unwrap();
+    let (sun, planet, ring) = (s.spur_gear(zs).unwrap(), s.spur_gear(zp).unwrap(), s.ring_gear(zr).unwrap());
+    let (r_sun, r_ring) = (s.pitch_radius(zs), s.pitch_radius(zr));
+    let (zs, zp, zr_f) = (zs as f64, zp as f64, zr as f64);
+    let window = 2.0 * (s.height + s.clearance);
+    for ring_held in [true, false] {
+        for k in 0..12 {
+            let theta = 0.37 * k as f64; // the sun's turn
+            let carrier = if ring_held { theta * zs / (zs + zr_f) } else { 0.0 };
+            let planet_turn = carrier - zs / zp * (theta - carrier);
+            let ring_turn = if ring_held { 0.0 } else { -theta * zs / zr_f };
+            for &(center, rotation) in &layout {
+                let c = (center.0 * carrier.cos() - center.1 * carrier.sin(), center.0 * carrier.sin() + center.1 * carrier.cos());
+                let direction = c.1.atan2(c.0);
+                let place_planet = (rotation + planet_turn, c);
+                for (other, place_other, r, is_ring) in
+                    [(&sun, (theta, (0.0, 0.0)), r_sun, false), (&ring, (ring_rotation + ring_turn, (0.0, 0.0)), r_ring, true)]
+                {
+                    let pitch_point = (r * direction.cos(), r * direction.sin());
+                    let (_, _, gap, overlapping) = check_mesh(&planet, other, place_planet, place_other, pitch_point, window, is_ring);
+                    let what = format!("ring held {ring_held}, sun turned {theta:.2}, planet at {direction:.2} with the {}", if is_ring { "ring" } else { "sun" });
+                    assert!(!overlapping, "{what}: overlapping");
+                    assert!(centered_gap(&s) - SHRINK_TOL <= gap && gap <= centered_gap(&s) + 2.0 * s.max_deviation, "{what}: gap {gap}");
+                }
+            }
+        }
+    }
+}

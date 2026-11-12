@@ -178,9 +178,19 @@ const RANGES = {
   face_width: [4, 24, 1], width: [5, 55, 2.5], bore: [0, 20, 1], bore2: [0, 20, 1], planet_bore: [0, 20, 1],
   backlash_inner: [0, 1, 0.05], backlash_outer: [0, 1, 0.05], rim: [40, 240, 10],
   end_bottom: [0, 10, 0.5], end_top: [0, 10, 0.5],
-  max_deviation: [0.002, 0.04, 0.002], ds: [0.01, 0.2, 0.01], fillet_deviation: [0.01, 0.2, 0.01],
-  step_deviation: [0.00005, 0.001, 0.00005],
+  // logarithmic (see LOG): [min, max, number of steps]
+  max_deviation: [0.001, 0.1, 10], ds: [0.005, 0.5, 10], fillet_deviation: [0.005, 0.5, 10],
+  step_deviation: [0.00001, 0.001, 10],
 };
+// Sliders whose steps are even ratios, not even differences: the smoothness
+// settings span decades. Their range is [min, max, number of steps]; step k
+// is min (max / min)^(k / steps), to 2 significant digits (with 5 steps a
+// decade: 1, 1.6, 2.5, 4, 6.3, 10, ...).
+const LOG = new Set(["max_deviation", "ds", "fillet_deviation", "step_deviation"]);
+const logValue = (r, k) => Number((r[0] * Math.pow(r[1] / r[0], k / r[2])).toPrecision(2));
+const logIndex = (r, v) => Math.min(r[2], Math.max(0, Math.round(Math.log(v / r[0]) / Math.log(r[1] / r[0]) * r[2])));
+// A slider's step for Search, which moves values in even differences.
+const searchStep = (name, r) => (LOG.has(name) ? (r[1] - r[0]) / r[2] : r[2]);
 // Typing a value past a slider's end moves that end out to it (as in
 // Desmos), but never past what the value can be at all: a pressure angle is
 // at most 45°, angles and lengths can't be negative. A value beyond that
@@ -190,7 +200,7 @@ function extendRange(name) {
   const s = sliders[name];
   const v = num(name, NaN);
   if (!s || !Number.isFinite(v)) return;
-  const [lo, hi] = LIMITS[name] || [0, Infinity];
+  const [lo, hi] = LIMITS[name] || [LOG.has(name) ? 1e-9 : 0, Infinity];
   let [min, max, step] = s.r;
   if (v > max) max = Math.max(max, Math.min(v, hi));
   if (v < min) min = Math.min(min, Math.max(v, lo));
@@ -211,10 +221,15 @@ const AUTO = {
 };
 const sliders = {};
 
+function validRange(name, r) {
+  if (!(Array.isArray(r) && r.length === 3 && r.every(Number.isFinite) && r[0] < r[1] && r[2] > 0)) return false;
+  // logarithmic: a positive minimum and a whole number of steps
+  return !LOG.has(name) || (r[0] > 0 && Number.isInteger(r[2]) && r[2] <= 200);
+}
 function savedRange(name) {
   try {
     const r = JSON.parse(localStorage.getItem("range:" + name));
-    if (Array.isArray(r) && r.length === 3 && r.every(Number.isFinite)) return r;
+    if (validRange(name, r)) return r;
   } catch {}
   return RANGES[name];
 }
@@ -224,6 +239,41 @@ function decimals(step) {
   return text.includes("e-") ? Number(text.split("e-")[1]) : (text.split(".")[1] || "").length;
 }
 
+// Dots at a slider's stops. The thumb's center travels from THUMB_R to
+// width - THUMB_R (a 16 px thumb), so with n steps the stops are a cell of
+// (width - 2 THUMB_R) / n apart, starting at THUMB_R: a dot repeated every
+// cell, the first centered there. The dots' strip (.ticks) starts TICKS_IN
+// px in and stops as far from the end, so the pattern's repeats beyond the
+// first and last stop are cut off. No dots when they'd be under 4 px apart.
+// Redrawn when the slider's width changes.
+const THUMB_R = 8, TICKS_IN = 6;
+function placeTicks(ticks, input, n) {
+  ticks.dataset.steps = n;
+  const width = input.getBoundingClientRect().width;
+  const cell = (width - 2 * THUMB_R) / n;
+  if (!width || !(n > 0) || !(cell >= 4)) {
+    ticks.style.background = "none";
+    return;
+  }
+  ticks.style.background = `radial-gradient(circle, var(--muted) 1.2px, transparent 1.6px) ${THUMB_R - TICKS_IN - cell / 2}px 50% / ${cell}px 100% repeat-x`;
+}
+const tickObserver = new ResizeObserver((entries) => {
+  for (const e of entries) {
+    const ticks = e.target.parentElement.querySelector(".ticks");
+    if (ticks) placeTicks(ticks, e.target, Number(ticks.dataset.steps));
+  }
+});
+
+// A slider's end value as shown beside it: under 0.001 as a power of ten
+// (1×10⁻⁵), which fits the space where 0.00001 wouldn't.
+function endText(v) {
+  if (!(v > 0 && v < 0.001)) return String(v);
+  const e = Math.floor(Math.log10(v) + 1e-9);
+  const m = Number((v / Math.pow(10, e)).toPrecision(2));
+  const sup = String(e).replace(/[-0-9]/g, (c) => "⁻⁰¹²³⁴⁵⁶⁷⁸⁹"["-0123456789".indexOf(c)]);
+  return `${m}×10${sup}`;
+}
+
 function buildSlider(f, input, row) {
   const wrap = document.createElement("div");
   wrap.className = "slider";
@@ -231,7 +281,8 @@ function buildSlider(f, input, row) {
   lo.type = hi.type = "button";
   lo.className = "lim lo";
   hi.className = "lim hi";
-  lo.title = hi.title = "Change the slider's range and step";
+  const log = LOG.has(f.name);
+  lo.title = hi.title = log ? "Change the slider's range and number of steps" : "Change the slider's range and step";
   const track = document.createElement("span");
   track.className = "track";
   const ticks = document.createElement("span");
@@ -240,6 +291,7 @@ function buildSlider(f, input, row) {
   range.type = "range";
   range.setAttribute("aria-label", f.label + " slider");
   track.append(ticks, range);
+  tickObserver.observe(range);
   wrap.append(lo, track, hi);
 
   // the editor: [min] ≤ label ≤ [max]  step [step]
@@ -253,12 +305,12 @@ function buildSlider(f, input, row) {
     b.setAttribute("aria-label", title);
     return b;
   };
-  const [eMin, eMax, eStep] = [box("Slider minimum"), box("Slider maximum"), box("Slider step")];
+  const [eMin, eMax, eStep] = [box("Slider minimum"), box("Slider maximum"), box(log ? "Number of steps" : "Slider step")];
   const reset = document.createElement("button");
   reset.type = "button";
   reset.textContent = "Reset";
   const text = (t) => Object.assign(document.createElement("span"), { textContent: t });
-  editor.append(eMin, text("≤ " + f.label + " ≤"), eMax, text("step"), eStep, reset);
+  editor.append(eMin, text("≤ " + f.label + " ≤"), eMax, text(log ? "steps" : "step"), eStep, reset);
 
   const s = { range, wrap, lo, hi, ticks, editor, eMin, eMax, eStep, field: f, input };
   sliders[f.name] = s;
@@ -266,19 +318,16 @@ function buildSlider(f, input, row) {
   const apply = (r, save) => {
     const [min, max, step] = r;
     s.r = r;
-    range.min = min;
-    range.max = max;
-    range.step = step;
-    lo.textContent = String(min);
-    hi.textContent = String(max);
+    // a logarithmic slider runs over step numbers 0 .. steps
+    range.min = log ? 0 : min;
+    range.max = log ? step : max;
+    range.step = log ? 1 : step;
+    lo.textContent = endText(min);
+    hi.textContent = endText(max);
     eMin.value = min;
     eMax.value = max;
     eStep.value = step;
-    const n = (max - min) / step;
-    ticks.style.background = n <= 40
-      ? `radial-gradient(circle, var(--muted) 1.2px, transparent 1.6px) 0 50% / calc(100% / ${n}) 100% repeat-x`
-      : "none";
-    ticks.style.width = "";
+    placeTicks(ticks, range, log ? step : Math.round((max - min) / step));
     if (save) {
       try { localStorage.setItem("range:" + f.name, JSON.stringify(r)); } catch {}
     }
@@ -296,7 +345,7 @@ function buildSlider(f, input, row) {
   hi.addEventListener("click", () => open(eMax));
   const fromEditor = () => {
     const r = [eMin, eMax, eStep].map((b) => Number(b.value.trim().replace(",", ".")));
-    if (r.every(Number.isFinite) && r[0] < r[1] && r[2] > 0) apply(r, true);
+    if (validRange(f.name, r)) apply(r, true);
   };
   for (const b of [eMin, eMax, eStep]) {
     b.addEventListener("input", (e) => { e.stopPropagation(); fromEditor(); });
@@ -319,7 +368,7 @@ function buildSlider(f, input, row) {
 
   range.addEventListener("input", (e) => {
     e.stopPropagation();
-    input.value = String(+Number(range.value).toFixed(decimals(s.r[2])));
+    input.value = log ? String(logValue(s.r, Number(range.value))) : String(+Number(range.value).toFixed(decimals(s.r[2])));
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
   return { wrap, editor };
@@ -334,7 +383,9 @@ function syncSlider(name) {
   s.wrap.classList.toggle("auto", isBlank);
   s.range.disabled = isBlank && !!s.field.optional;
   if (s.field.optional) s.input.placeholder = Number.isFinite(value) ? String(+value.toFixed(3)) : "";
-  if (Number.isFinite(value)) s.range.value = String(Math.min(s.r[1], Math.max(s.r[0], value)));
+  if (Number.isFinite(value)) {
+    s.range.value = LOG.has(name) ? String(value > 0 ? logIndex(s.r, value) : 0) : String(Math.min(s.r[1], Math.max(s.r[0], value)));
+  }
 }
 
 // Put a field's unit right after its number (or after the placeholder);
@@ -379,7 +430,9 @@ function setAuto(name, on, fire = true) {
     input.value = "";
   } else if (input.value.trim() === "") {
     const v = AUTO[name] ? AUTO[name]() : NaN;
-    input.value = Number.isFinite(v) ? String(+v.toFixed(s ? decimals(s.r[2]) : 3)) : "";
+    // to the slider's precision (2 significant digits on a logarithmic one)
+    const shown = !s ? +v.toFixed(3) : LOG.has(name) ? Number(v.toPrecision(2)) : +v.toFixed(decimals(s.r[2]));
+    input.value = Number.isFinite(v) ? String(shown) : "";
   }
   if (!on && partner && !rows[partner].auto.checked) setAuto(partner, true, false);
   if (fire) input.dispatchEvent(new Event("input", { bubbles: true }));
@@ -705,20 +758,25 @@ function updateSections() {
 // the cut don't hide it. It also covers the seam between the cut face and
 // the sides.
 const outlineMaterial = new THREE.MeshBasicMaterial({ color: 0x101114, side: THREE.DoubleSide });
+// Each part's outline lives with the part (in its holder), so it turns
+// with it when the gears spin.
 function outlineCut(sec, h) {
-  if (sec.outline) {
-    sec.outline.geometry.dispose();
-    group.remove(sec.outline);
-    sec.outline = null;
+  for (const part of sec.parts) {
+    if (part.outline) {
+      part.outline.geometry.dispose();
+      part.holder.remove(part.outline);
+      part.outline = null;
+    }
   }
   if (h === null) return;
   const half = 0.05 * (num("module", 2) || 2);
   const lift = sceneSize * 2e-4;
   const axis = sec.axis;
-  const out = [];
   const p = new THREE.Vector3(), q = new THREE.Vector3(), d = new THREE.Vector3(), n = new THREE.Vector3();
-  const corner = (base, sd, sn) => out.push(base.x + d.x * sd + n.x * sn, base.y + d.y * sd + n.y * sn, base.z + d.z * sd + n.z * sn);
-  for (const { positions: P, indices: I, heights: H } of sec.parts) {
+  for (const part of sec.parts) {
+    const { positions: P, indices: I, heights: H } = part;
+    const out = [];
+    const corner = (base, sd, sn) => out.push(base.x + d.x * sd + n.x * sn, base.y + d.y * sd + n.y * sn, base.z + d.z * sd + n.z * sn);
     for (let t = 0; t < I.length; t += 3) {
       const a = I[t], b = I[t + 1], c = I[t + 2];
       const da = H[a] - h, db = H[b] - h, dc = H[c] - h;
@@ -744,11 +802,11 @@ function outlineCut(sec, h) {
       corner(p, -half, half); corner(p, -half, -half); corner(q, half, -half);
       corner(p, -half, half); corner(q, half, -half); corner(q, half, half);
     }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(out), 3));
+    part.outline = new THREE.Mesh(geometry, outlineMaterial);
+    part.holder.add(part.outline);
   }
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(out), 3));
-  sec.outline = new THREE.Mesh(geometry, outlineMaterial);
-  group.add(sec.outline);
 }
 sectionInput.addEventListener("input", updateSections);
 
@@ -774,8 +832,111 @@ try {
   }
 } catch {}
 
+// ----------------------------------------------------------------- spinning
+//
+// Planetary sets and assembled bevel pairs can spin in the view. One gear
+// drives (the sun, or bevel gear 1) and turns by `angle`; the others turn
+// as meshing makes them, starting from the positions they were built in
+// (the STL's), so the teeth stay in mesh:
+// - bevel: gear 2 by -z1 / z2 times as much, about its own axis;
+// - planetary, carrier held: each planet by -sun / planet teeth, the ring by
+//   -sun / ring teeth, all about their own axes;
+// - planetary, ring held: the carrier (the planets' centers) by
+//   sun / (sun + ring teeth) about the middle, and each planet by
+//   -(sun / planet teeth) (1 - that) relative to the carrier.
+// The slider sets the driver's speed in a few steps: stop in the middle,
+// faster toward the ends (counterclockwise to the right, seen from above). The
+// gears speed up or slow down to a new setting over a fraction of a second
+// instead of jumping; Reset stops them at once.
+let spinners = []; // per part: { orbit, spin, holder, axis, teeth, role }
+let spinnable = false;
+let angle = 0; // the driver's turn, radians
+let hold = "ring";
+const spinRow = document.getElementById("spin-row");
+const holdRow = document.getElementById("hold-row");
+const spinInput = document.getElementById("spin");
+// The slider has as many steps each way as fit at least STEP_PX apart (so
+// an odd number of positions, stop in the middle); the driver's turns per
+// second grow with the square of the step, up to 1.5 at the ends.
+const STEP_PX = 14;
+function turnsPerSecond() {
+  const v = Number(spinInput.value) / Number(spinInput.max);
+  return Math.sign(v) * v * v * 1.5;
+}
+function fitSpinSteps() {
+  const width = spinInput.getBoundingClientRect().width;
+  if (!width) return; // hidden
+  const side = Math.max(1, Math.floor(width / 2 / STEP_PX));
+  const old = Number(spinInput.max);
+  if (side === old) return;
+  const value = Math.round(Number(spinInput.value) / old * side); // about the same speed
+  spinInput.min = -side;
+  spinInput.max = side;
+  spinInput.value = value;
+  // a dot at each step, as on the other sliders
+  placeTicks(document.getElementById("spin-ticks"), spinInput, 2 * side);
+}
+new ResizeObserver(fitSpinSteps).observe(spinInput);
+tickObserver.observe(spinInput);
+let speed = 0; // turns per second now, easing toward turnsPerSecond()
+const EASE = 0.25; // seconds: the time constant of speeding up or slowing down
+
+function updateSpinControls() {
+  spinRow.hidden = !spinnable;
+  holdRow.hidden = !(spinnable && spinners.some((p) => p.role === "planet"));
+  for (const b of holdRow.querySelectorAll("button")) b.setAttribute("aria-pressed", String(b.dataset.hold === hold));
+}
+function turnParts() {
+  const teeth = (role) => (spinners.find((p) => p.role === role) || {}).teeth || 1;
+  const a = spinnable ? angle : 0;
+  for (const p of spinners) {
+    let spin = 0, orbit = 0;
+    if (p.role === "gear" || p.role === "sun") spin = a;
+    else if (p.role === "gear 2") spin = -a * teeth("gear") / p.teeth;
+    else if (hold === "carrier") spin = -a * teeth("sun") / p.teeth; // planets and ring, in place
+    else {
+      const carrier = teeth("sun") / (teeth("sun") + teeth("ring"));
+      if (p.role === "planet") {
+        orbit = a * carrier;
+        spin = -a * (teeth("sun") / p.teeth) * (1 - carrier);
+      }
+    }
+    p.spin.quaternion.setFromAxisAngle(p.axis, spin);
+    p.orbit.quaternion.setFromAxisAngle(new THREE.Vector3(0, 0, 1), orbit);
+  }
+}
+function stopSpin() {
+  spinInput.value = 0;
+  speed = 0;
+  angle = 0;
+  updateSpinControls();
+  turnParts();
+}
+
+document.getElementById("spin-reset").addEventListener("click", stopSpin);
+for (const b of holdRow.querySelectorAll("button")) {
+  b.addEventListener("click", () => {
+    hold = b.dataset.hold;
+    angle = 0; // from the built positions again, held the new way
+    updateSpinControls();
+    turnParts();
+  });
+}
+
+let lastFrame = performance.now();
 (function animate() {
   requestAnimationFrame(animate);
+  const now = performance.now();
+  const dt = Math.min(0.1, (now - lastFrame) / 1000);
+  // ease toward the slider's speed (and snap once close, so it really stops)
+  const target = turnsPerSecond();
+  speed += (target - speed) * (1 - Math.exp(-dt / EASE));
+  if (Math.abs(target - speed) < 1e-4) speed = target;
+  if (spinnable && speed !== 0) {
+    angle += 2 * Math.PI * speed * dt;
+    turnParts();
+  }
+  lastFrame = now;
   controls.update();
   renderer.render(scene, camera);
 })();
@@ -793,8 +954,23 @@ function show(parts, kind, info) {
     axis: f ? new THREE.Vector3(...f.axis) : new THREE.Vector3(0, 0, 1),
     apex: f ? new THREE.Vector3(...f.apex) : null,
     cone: f ? f.pitch_cone : 0,
-    min: Infinity, max: -Infinity, plane: new THREE.Plane(), meshes: [], parts: [], outline: null,
+    min: Infinity, max: -Infinity, plane: new THREE.Plane(), meshes: [], parts: [],
   }));
+  // Each part hangs from pivots that turn it (see Spinning): an orbit about
+  // the z axis, a spin about its own axis, and a holder that puts it back
+  // in place, holding its meshes (world coordinates) and its cut outline.
+  spinners = parts.map((_, n) => {
+    const sp = info && info.spin && info.spin[n];
+    const center = sp ? new THREE.Vector3(...sp.center) : new THREE.Vector3();
+    const axis = sp ? new THREE.Vector3(...sp.axis).normalize() : new THREE.Vector3(0, 0, 1);
+    const orbit = new THREE.Object3D(), spin = new THREE.Object3D(), holder = new THREE.Object3D();
+    spin.position.copy(center);
+    holder.position.copy(center).negate();
+    orbit.add(spin);
+    spin.add(holder);
+    group.add(orbit);
+    return { orbit, spin, holder, axis, teeth: sp ? sp.teeth : 0, role: sp ? sp.role : "gear" };
+  });
   parts.forEach((part, n) => {
     const sec = sections[bevel ? n : 0];
     const P = part.positions;
@@ -805,7 +981,7 @@ function show(parts, kind, info) {
       if (h < sec.min) sec.min = h;
       if (h > sec.max) sec.max = h;
     }
-    sec.parts.push({ positions: P, indices: part.indices, heights });
+    sec.parts.push({ positions: P, indices: part.indices, heights, holder: spinners[n].holder, outline: null });
   });
   if (bevel) {
     // A point rho from the apex along the line where the pitch cones touch
@@ -840,17 +1016,21 @@ function show(parts, kind, info) {
     // one flat, unlit, lighter color makes them look like a flat cut face.
     const inside = new THREE.MeshBasicMaterial({ color: new THREE.Color(color).lerp(new THREE.Color(0xffffff), 0.45), side: THREE.BackSide, clippingPlanes });
     const meshes = [new THREE.Mesh(geometry, material), new THREE.Mesh(geometry, inside)];
-    group.add(...meshes);
+    spinners[n].holder.add(...meshes);
     sec.meshes.push(...meshes);
   });
   updateSections();
   scene.add(group);
+  spinnable = kind === "planetary" || (kind === "bevel" && inputs.layout.value === "assembled");
   // Re-frame only when the type or layout changes, so the view stays put while editing.
   const key = kind + "/" + inputs.layout.value;
   // A new type or layout, or a loaded file: frame it anew, uncut.
+  updateSpinControls();
+  turnParts();
   if (key !== framedKind || reframe) {
     sectionInput.value = 100;
     updateSections();
+    stopSpin();
     frame();
     framedKind = key;
     reframe = false;
@@ -1116,7 +1296,7 @@ function startSearch() {
     if (!Number.isFinite(value)) continue;
     // the bevel backlash end left on auto stays auto
     if (AUTO_PARTNER[name] && blank) continue;
-    free.push({ name, value, min: s.r[0], max: s.r[1], step: s.r[2], whole: !!entry.field.whole, label: (entry.field.labels && entry.field.labels[kind]) || entry.field.label, blank });
+    free.push({ name, value, min: s.r[0], max: s.r[1], step: searchStep(name, s.r), whole: !!entry.field.whole, label: (entry.field.labels && entry.field.labels[kind]) || entry.field.label, blank });
   }
   if (!free.length) {
     statusLine.textContent = "Every value is set: turn \"set\" off on the values Search may change, then click Search.";

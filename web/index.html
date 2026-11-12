@@ -49,11 +49,29 @@
       <canvas id="canvas"></canvas>
       <p class="hint">Drag to rotate, scroll to zoom, right-drag to pan.</p>
       <div class="view-controls">
-        <label class="section-row" title="Cut away the top of the model, to see inside it (only in this view, not in the STL)">
-          Section view <input type="range" id="section" min="0" max="100" step="1" value="100"> <span id="section-value">off</span>
+        <div class="vc-row" id="hold-row" title="Which part of the planetary set stays still" hidden>
+          <span class="vc-label">Hold</span>
+          <span class="vc-widget hold-buttons"><button type="button" class="hold" data-hold="ring">Ring</button><button type="button" class="hold" data-hold="carrier">Carrier</button></span>
+          <span></span>
+        </div>
+        <div class="vc-row" id="spin-row" title="Spin the gears in mesh: stop in the middle, faster toward the ends" hidden>
+          <span class="vc-label">
+            <button type="button" id="spin-reset" class="icon" title="Stop, and put the teeth back where the STL and STEP files have them" aria-label="Stop and reset">
+              <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M3 8a5 5 0 1 0 1.6-3.7M3 2.5v2.6h2.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>Spin
+          </span>
+          <span class="vc-widget slider"><span class="track"><span class="ticks" id="spin-ticks"></span><input type="range" id="spin" min="-1" max="1" step="1" value="0" aria-label="Spin speed"></span></span>
+          <span></span>
+        </div>
+        <label class="vc-row" title="Cut away the top of the model, to see inside it (only in this view, not in the STL)">
+          <span class="vc-label">Section view</span>
+          <input type="range" class="vc-widget" id="section" min="0" max="100" step="1" value="100">
+          <span id="section-value">off</span>
         </label>
-        <label class="fov" title="Field of view: how much perspective the view has. 0° looks from infinitely far away, so sizes don't change with depth.">
-          FOV <input type="range" id="fov" min="0" max="179" step="1" value="0"> <span id="fov-value">0°</span>
+        <label class="vc-row" title="Field of view: how much perspective the view has. 0° looks from infinitely far away, so sizes don't change with depth.">
+          <span class="vc-label">FOV</span>
+          <input type="range" class="vc-widget" id="fov" min="0" max="179" step="1" value="0">
+          <span id="fov-value">0°</span>
         </label>
       </div>
     </section>

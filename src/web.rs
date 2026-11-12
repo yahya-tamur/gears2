@@ -70,6 +70,20 @@ pub struct Info {
     pub triangles: usize,
     /// Each bevel gear's apex, axis and pitch cone, for the section view.
     pub bevel_frames: Option<[BevelFrame; 2]>,
+    /// For each part, in order, how it turns: for the page's spinning view.
+    pub spin: Vec<Spin>,
+}
+
+/// How a part turns in place: about the line through `center` along `axis`
+/// (counterclockwise seen from where axis points), with `teeth` teeth.
+/// `role`: "gear" (a spur or ring gear alone, or bevel gear 1), "gear 2"
+/// (bevel), "sun", "planet" or "ring" (planetary).
+#[derive(Debug, Clone)]
+pub struct Spin {
+    pub center: [f64; 3],
+    pub axis: [f64; 3],
+    pub teeth: usize,
+    pub role: &'static str,
 }
 
 fn whole(value: f64, name: &str) -> Result<usize, GearError> {
@@ -698,22 +712,30 @@ pub fn build_parts(o: &Options) -> Result<(Vec<IndexedMesh>, Info), GearError> {
     crate::gear_step::check_tolerance(o.step_deviation)?;
     let (s, at_toe, end_bottom, end_top) = gear_set(o, false)?;
     let mut bevel_frames = None;
+    let z_axis = [0.0, 0.0, 1.0];
+    let mut spin = Vec::new();
     let parts = match o.kind.as_str() {
-        "spur" => vec![spur_gear_mesh(&s, whole(o.teeth, "Teeth")?, o.width, o.bore, o.hand, end_bottom, end_top)?],
-        "ring" => vec![ring_gear_mesh(&s, whole(o.ring_teeth, "Teeth")?, o.width, o.rim, o.hand, end_bottom, end_top)?],
-        "planetary" => planetary_gear_mesh(
-            &s,
-            whole(o.sun_teeth, "Sun teeth")?,
-            whole(o.planet_teeth, "Planet teeth")?,
-            whole(o.planets, "Planets")?,
-            o.width,
-            o.rim,
-            o.bore,
-            o.planet_bore,
-            o.hand,
-            end_bottom,
-            end_top,
-        )?,
+        "spur" => {
+            let teeth = whole(o.teeth, "Teeth")?;
+            spin.push(Spin { center: [0.0; 3], axis: z_axis, teeth, role: "gear" });
+            vec![spur_gear_mesh(&s, teeth, o.width, o.bore, o.hand, end_bottom, end_top)?]
+        }
+        "ring" => {
+            let teeth = whole(o.ring_teeth, "Teeth")?;
+            spin.push(Spin { center: [0.0; 3], axis: z_axis, teeth, role: "gear" });
+            vec![ring_gear_mesh(&s, teeth, o.width, o.rim, o.hand, end_bottom, end_top)?]
+        }
+        "planetary" => {
+            let (zs, zp, n) = (whole(o.sun_teeth, "Sun teeth")?, whole(o.planet_teeth, "Planet teeth")?, whole(o.planets, "Planets")?);
+            let parts = planetary_gear_mesh(&s, zs, zp, n, o.width, o.rim, o.bore, o.planet_bore, o.hand, end_bottom, end_top)?;
+            let (zr, layout, _) = s.planetary_layout(zs, zp, n, 0.0)?;
+            spin.push(Spin { center: [0.0; 3], axis: z_axis, teeth: zs, role: "sun" });
+            for (c, _) in layout {
+                spin.push(Spin { center: [c.0, c.1, 0.0], axis: z_axis, teeth: zp, role: "planet" });
+            }
+            spin.push(Spin { center: [0.0; 3], axis: z_axis, teeth: zr, role: "ring" });
+            parts
+        }
         "bevel" => {
             let (parts, frames) = bevel_pair_layout(
                 &s,
@@ -725,6 +747,10 @@ pub fn build_parts(o: &Options) -> Result<(Vec<IndexedMesh>, Info), GearError> {
                 at_toe,
                 o.layout.as_deref() != Some("print"),
             )?;
+            for (i, f) in frames.iter().enumerate() {
+                let teeth = if i == 0 { whole(o.teeth, "Gear 1 teeth")? } else { whole(o.teeth2, "Gear 2 teeth")? };
+                spin.push(Spin { center: f.apex, axis: f.axis, teeth, role: if i == 0 { "gear" } else { "gear 2" } });
+            }
             bevel_frames = Some(frames);
             parts
         }
@@ -735,6 +761,7 @@ pub fn build_parts(o: &Options) -> Result<(Vec<IndexedMesh>, Info), GearError> {
         min_ring_teeth: s.min_ring_teeth,
         triangles: parts.iter().map(|m| m.triangles.len()).sum(),
         bevel_frames,
+        spin,
     };
     Ok((parts, info))
 }
@@ -844,6 +871,16 @@ pub fn build(options: JsValue) -> JsValue {
                 }
                 set(&summary, "bevel_frames", &list);
             }
+            let spins = js_sys::Array::new();
+            for sp in &info.spin {
+                let item = js_sys::Object::new();
+                set(&item, "center", &js_sys::Float64Array::from(&sp.center[..]).into());
+                set(&item, "axis", &js_sys::Float64Array::from(&sp.axis[..]).into());
+                set(&item, "teeth", &JsValue::from(sp.teeth as u32));
+                set(&item, "role", &JsValue::from_str(sp.role));
+                spins.push(&item);
+            }
+            set(&summary, "spin", &spins);
             set(&result, "info", &summary);
         }
     }
