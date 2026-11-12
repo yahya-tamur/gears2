@@ -54,6 +54,13 @@ pub struct Options {
     pub backlash_outer: Option<f64>,
     #[serde(default)]
     pub layout: Option<String>,
+    /// How closely a STEP file's B-spline surfaces follow the exact shape, mm.
+    #[serde(default = "default_step_deviation")]
+    pub step_deviation: f64,
+}
+
+fn default_step_deviation() -> f64 {
+    crate::gear_step::DEFAULT_TOLERANCE
 }
 
 /// Summary shown under the options.
@@ -163,6 +170,9 @@ pub fn badness(o: &Options) -> f64 {
     if v > 0.0 {
         return 100.0 + v;
     }
+    if crate::gear_step::check_tolerance(o.step_deviation).is_err() {
+        return HARD;
+    }
     let Ok((s, at_toe, eb, et)) = gear_set(o, true) else { return HARD };
     fit_badness(o, &s, at_toe, eb, et)
 }
@@ -185,11 +195,12 @@ pub(crate) fn fit_badness(o: &Options, s: &GearSystem, at_toe: bool, eb: f64, et
         "spur" => {
             let Some(z) = whole_or(o.teeth) else { return HARD };
             let z = z.max(3);
-            short(z, s.min_spur_teeth) + bore_over(z, o.bore)
+            short(z, s.min_spur_teeth) + bore_over(z, o.bore) + spacing(s, z, false)
         }
         "ring" => {
             let Some(z) = whole_or(o.ring_teeth) else { return HARD };
-            short(z, s.min_ring_teeth) + rim_under(z.max(3))
+            let z = z.max(3);
+            short(z, s.min_ring_teeth) + rim_under(z) + spacing(s, z, true)
         }
         "planetary" => {
             let (Some(zs), Some(zp), Some(n)) = (whole_or(o.sun_teeth), whole_or(o.planet_teeth), whole_or(o.planets)) else {
@@ -209,6 +220,7 @@ pub(crate) fn fit_badness(o: &Options, s: &GearSystem, at_toe: bool, eb: f64, et
                 v += (s.clearance - gap).max(0.0);
             }
             v + bore_over(zs, o.bore) + bore_over(zp, o.planet_bore) + rim_under(zr)
+                + spacing(s, zs, false).max(spacing(s, zp, false)).max(spacing(s, zr, true))
         }
         "bevel" => {
             let (Some(z1), Some(z2)) = (whole_or(o.teeth), whole_or(o.teeth2)) else { return HARD };
@@ -219,10 +231,57 @@ pub(crate) fn fit_badness(o: &Options, s: &GearSystem, at_toe: bool, eb: f64, et
             for (i, bore) in [o.bore, o.bore2].into_iter().enumerate() {
                 v += ((bore - largest_bevel_bore(s, &pair, i)) / 2.0).max(0.0) * (bore > 0.0) as i32 as f64;
             }
-            v
+            v + bevel_spacing(o, s, [z1, z2], at_toe)
         }
         _ => HARD,
     }
+}
+
+thread_local! {
+    /// spacing() and bevel_spacing() results already worked out (they draw
+    /// the root roundings, which is slow; Search asks for the same ones often).
+    static SPACING: std::cell::RefCell<std::collections::HashMap<Vec<u64>, f64>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+fn remembered(key: Vec<u64>, work: impl FnOnce() -> f64) -> f64 {
+    if let Some(v) = SPACING.with(|c| c.borrow().get(&key).copied()) {
+        return v;
+    }
+    let v = work();
+    SPACING.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() > 20000 {
+            c.clear(); // keep memory bounded
+        }
+        c.insert(key, v);
+    });
+    v
+}
+
+/// GearSystem::spacing_shortfall, remembered.
+fn spacing(s: &GearSystem, teeth: usize, ring: bool) -> f64 {
+    let key = vec![
+        s.pitch.to_bits(), s.pressure_angle.to_bits(), s.height.to_bits(), s.backlash.to_bits(), s.clearance.to_bits(),
+        s.fillet_radius.to_bits(), s.fillet_deviation.to_bits(), s.max_deviation.to_bits(), s.ds.to_bits(),
+        s.helix_angle.to_bits(), s.min_spur_teeth as u64, teeth as u64, ring as u64,
+    ];
+    remembered(key, || s.spacing_shortfall(teeth, ring))
+}
+
+/// BevelPair::spacing_shortfall for these options, remembered (HARD if the
+/// pair can't be made).
+fn bevel_spacing(o: &Options, s: &GearSystem, teeth: [usize; 2], at_toe: bool) -> f64 {
+    let key = vec![
+        s.pitch.to_bits(), s.pressure_angle.to_bits(), s.height.to_bits(), s.backlash.to_bits(), s.clearance.to_bits(),
+        s.fillet_radius.to_bits(), s.fillet_deviation.to_bits(), s.max_deviation.to_bits(), s.ds.to_bits(),
+        s.helix_angle.to_bits(), o.shaft_angle.to_bits(), o.face_width.to_bits(), teeth[0] as u64, teeth[1] as u64,
+        at_toe as u64, u64::MAX,
+    ];
+    remembered(key, || match BevelPair::with_fillets(s, teeth, o.shaft_angle * PI / 180.0, o.face_width, at_toe) {
+        Ok(pair) => pair.spacing_shortfall(),
+        Err(_) => 1000.0,
+    })
 }
 
 /// Largest bore (diameter) a spur gear (or the sun or a planet) with this
@@ -434,6 +493,7 @@ impl Options {
             "bore2" => self.bore2,
             "backlash_inner" => return self.backlash_inner,
             "backlash_outer" => return self.backlash_outer,
+            "step_deviation" => self.step_deviation,
             _ => return None,
         })
     }
@@ -468,6 +528,7 @@ impl Options {
             "bore2" => self.bore2 = v,
             "backlash_inner" => self.backlash_inner = Some(v),
             "backlash_outer" => self.backlash_outer = Some(v),
+            "step_deviation" => self.step_deviation = v,
             _ => return false,
         }
         true
@@ -644,6 +705,8 @@ pub fn assess(options: JsValue) -> f64 {
 /// point and the tests).
 pub fn build_parts(o: &Options) -> Result<(Vec<IndexedMesh>, Info), GearError> {
     let degrees = PI / 180.0;
+    // the STEP setting too, so a bad value shows at once, not on download
+    crate::gear_step::check_tolerance(o.step_deviation)?;
     let (s, at_toe, end_bottom, end_top) = gear_set(o, false)?;
     let mut bevel_frames = None;
     let parts = match o.kind.as_str() {
@@ -696,9 +759,18 @@ fn set(target: &js_sys::Object, name: &str, value: &JsValue) {
 pub fn build_assembly(o: &Options) -> Result<crate::gear_step::Assembly, GearError> {
     use crate::gear_step::{planetary_assembly, ring_gear_solid, spur_gear_solid, Assembly};
     let (s, at_toe, end_bottom, end_top) = gear_set(o, false)?;
+    let tol = o.step_deviation;
     Ok(match o.kind.as_str() {
-        "spur" => Assembly::single("spur gear", spur_gear_solid(&s, whole(o.teeth, "Teeth")?, o.width, o.bore, o.hand, end_bottom, end_top)?),
-        "ring" => Assembly::single("ring gear", ring_gear_solid(&s, whole(o.ring_teeth, "Teeth")?, o.width, o.rim, o.hand, end_bottom, end_top)?),
+        "spur" => Assembly::single(
+            "spur gear",
+            spur_gear_solid(&s, whole(o.teeth, "Teeth")?, o.width, o.bore, o.hand, end_bottom, end_top, tol)?,
+            tol,
+        ),
+        "ring" => Assembly::single(
+            "ring gear",
+            ring_gear_solid(&s, whole(o.ring_teeth, "Teeth")?, o.width, o.rim, o.hand, end_bottom, end_top, tol)?,
+            tol,
+        ),
         "planetary" => planetary_assembly(
             &s,
             whole(o.sun_teeth, "Sun teeth")?,
@@ -711,6 +783,7 @@ pub fn build_assembly(o: &Options) -> Result<crate::gear_step::Assembly, GearErr
             o.hand,
             end_bottom,
             end_top,
+            tol,
         )?,
         "bevel" => crate::bevel_step::bevel_pair_assembly(
             &s,
@@ -721,6 +794,7 @@ pub fn build_assembly(o: &Options) -> Result<crate::gear_step::Assembly, GearErr
             o.hand,
             at_toe,
             o.layout.as_deref() != Some("print"),
+            tol,
         )?,
         other => return Err(GearError(format!("Unknown gear type {:?}.", other))),
     })

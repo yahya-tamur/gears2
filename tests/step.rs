@@ -13,16 +13,17 @@
 
 use gears2::bevel::{azimuth, bevel_pair_layout, rot_z, BevelPair};
 use gears2::bevel_step::{bevel_gear_solid, bevel_pair_assembly};
-use gears2::gear_step::{planetary_assembly, planetary_solids, ring_gear_solid, spur_gear_solid, TOLERANCE};
+use gears2::gear_step::{planetary_assembly, planetary_solids, ring_gear_solid, spur_gear_solid, DEFAULT_TOLERANCE};
 use gears2::gears::{GearSystem, Params, Piece};
 use gears2::mesh::EndZones;
 use gears2::step::{norm, scale, step_file, sub, unit, Curve, Solid, Surface, V3};
 use std::f64::consts::PI;
 
-/// Module 2, the given helix and pressure angles (the default 20 degrees
+/// Module 2, the given helix and pressure angles, point spacing 0.02 mm (fine
+/// enough for every gear here; the default 20 degrees
 /// needs at least 21 teeth; 30 degrees allows small gears).
 fn system_with(helix: f64, pressure: f64) -> GearSystem {
-    let mut p = Params::new(2.0 * PI, pressure.to_radians(), 4.0, 0.2, 0.01, 0.05);
+    let mut p = Params::new(2.0 * PI, pressure.to_radians(), 4.0, 0.2, 0.01, 0.02);
     p.helix_angle = helix.to_radians();
     GearSystem::new(&p).unwrap()
 }
@@ -152,9 +153,9 @@ fn spur_and_ring_solids_are_closed_and_exact() {
             for hand in if eb == et { vec![1, -1] } else { vec![1] } {
                 for (ring, teeth, circle) in [(false, 21, 8.0), (false, 12, 0.0), (true, 63, 150.0)] {
                     let solid = if ring {
-                        ring_gear_solid(&s, teeth, 10.0, circle, hand, eb, et).unwrap()
+                        ring_gear_solid(&s, teeth, 10.0, circle, hand, eb, et, DEFAULT_TOLERANCE).unwrap()
                     } else {
-                        spur_gear_solid(&s, teeth, 10.0, circle, hand, eb, et).unwrap()
+                        spur_gear_solid(&s, teeth, 10.0, circle, hand, eb, et, DEFAULT_TOLERANCE).unwrap()
                     };
                     let what = format!("helix {helix}, ends {eb},{et}, hand {hand}, ring {ring}, {teeth} teeth");
                     let problems = solid.problems(1e-9);
@@ -162,7 +163,7 @@ fn spur_and_ring_solids_are_closed_and_exact() {
                     let pieces = if ring { s.ring_gear_pieces(teeth).unwrap() } else { s.spur_gear_pieces(teeth).unwrap() };
                     let zones = EndZones::new(&s, teeth, 10.0, eb, et, hand, ring);
                     let err = largest_error(&solid, &pieces, teeth, &zones, 0.0, [0.0; 3]);
-                    assert!(err < 2.0 * TOLERANCE, "{what}: a curve or surface is {err} mm from the exact shape");
+                    assert!(err < 2.0 * DEFAULT_TOLERANCE, "{what}: a curve or surface is {err} mm from the exact shape");
                 }
             }
         }
@@ -170,10 +171,35 @@ fn spur_and_ring_solids_are_closed_and_exact() {
 }
 
 #[test]
+fn the_tolerance_sets_how_closely_the_splines_follow() {
+    let s = system_with(30.0, 30.0);
+    let c = chamfer(&s);
+    let zones = EndZones::new(&s, 13, 6.0, c, c, 1, false);
+    let pieces = s.spur_gear_pieces(13).unwrap();
+    let mut sizes = Vec::new();
+    for tol in [1e-3, 1e-4, 1e-5] {
+        let solid = spur_gear_solid(&s, 13, 6.0, 4.0, 1, c, c, tol).unwrap();
+        assert!(solid.problems(1e-9).is_empty());
+        let err = largest_error(&solid, &pieces, 13, &zones, 0.0, [0.0; 3]);
+        assert!(err < 2.0 * tol, "tolerance {tol}: {err} mm from the exact shape");
+        let text = step_file(&[solid], "test", tol);
+        // written as the file's distance accuracy
+        let written = format!("{tol:.10}");
+        assert!(text.contains(&format!("LENGTH_MEASURE({})", written.trim_end_matches('0'))), "tolerance {tol} not in the file");
+        sizes.push(text.matches("CARTESIAN_POINT(").count());
+    }
+    assert!(sizes[0] < sizes[1] && sizes[1] < sizes[2], "finer tolerance, more points: {sizes:?}");
+    // outside the allowed range: an error, not a crude or endless file
+    for tol in [0.0, 1e-9, 0.5, f64::NAN] {
+        assert!(spur_gear_solid(&s, 13, 6.0, 4.0, 1, c, c, tol).is_err(), "tolerance {tol} accepted");
+    }
+}
+
+#[test]
 fn planetary_solids_are_closed_and_placed_like_the_meshes() {
     let s = system(30.0);
     let c = chamfer(&s);
-    let solids = planetary_solids(&s, 21, 21, 4, 10.0, 150.0, 10.0, 8.0, 1, c, c).unwrap();
+    let solids = planetary_solids(&s, 21, 21, 4, 10.0, 150.0, 10.0, 8.0, 1, c, c, DEFAULT_TOLERANCE).unwrap();
     let meshes = gears2::mesh::planetary_gear_mesh(&s, 21, 21, 4, 10.0, 150.0, 10.0, 8.0, 1, c, c).unwrap();
     assert_eq!(solids.len(), meshes.len());
     for (k, (solid, mesh)) in solids.iter().zip(&meshes).enumerate() {
@@ -195,8 +221,8 @@ fn planetary_solids_are_closed_and_placed_like_the_meshes() {
 fn step_text_is_well_formed() {
     let s = system_with(30.0, 30.0);
     let c = chamfer(&s);
-    let solids = vec![spur_gear_solid(&s, 13, 6.0, 4.0, 1, c, 0.0).unwrap(), ring_gear_solid(&s, 40, 6.0, 100.0, -1, 0.0, c).unwrap()];
-    let text = step_file(&solids, "test", TOLERANCE);
+    let solids = vec![spur_gear_solid(&s, 13, 6.0, 4.0, 1, c, 0.0, DEFAULT_TOLERANCE).unwrap(), ring_gear_solid(&s, 40, 6.0, 100.0, -1, 0.0, c, DEFAULT_TOLERANCE).unwrap()];
+    let text = step_file(&solids, "test", DEFAULT_TOLERANCE);
     assert!(text.starts_with("ISO-10303-21;\nHEADER;"));
     assert!(text.ends_with("ENDSEC;\nEND-ISO-10303-21;\n"));
     let data = &text[text.find("DATA;\n").unwrap() + 6..text.rfind("ENDSEC;").unwrap()];
@@ -224,17 +250,17 @@ fn planetary_assemblies_share_parts_and_the_turned_over_sun_is_exact() {
     let s = system(30.0);
     let c = chamfer(&s);
     // the sun has the planets' teeth and bore, and the ends match: one part
-    let a = planetary_assembly(&s, 21, 21, 4, 10.0, 150.0, 8.0, 8.0, 1, c, c).unwrap();
+    let a = planetary_assembly(&s, 21, 21, 4, 10.0, 150.0, 8.0, 8.0, 1, c, c, DEFAULT_TOLERANCE).unwrap();
     assert_eq!(a.parts.len(), 2, "planet (also the sun) and ring");
     assert_eq!(a.instances.len(), 6);
     let sun = &a.solids()[0];
     assert!(sun.problems(1e-9).is_empty());
     let zones = EndZones::new(&s, 21, 10.0, c, c, 1, false);
     let err = largest_error(sun, &s.spur_gear_pieces(21).unwrap(), 21, &zones, 0.0, [0.0; 3]);
-    assert!(err < 2.0 * TOLERANCE, "the turned-over planet is {err} mm from the sun's exact shape");
+    assert!(err < 2.0 * DEFAULT_TOLERANCE, "the turned-over planet is {err} mm from the sun's exact shape");
     // a different bore, or different ends: the sun is a part of its own
-    assert_eq!(planetary_assembly(&s, 21, 21, 4, 10.0, 150.0, 10.0, 8.0, 1, c, c).unwrap().parts.len(), 3);
-    assert_eq!(planetary_assembly(&s, 21, 21, 4, 10.0, 150.0, 8.0, 8.0, 1, c, 0.0).unwrap().parts.len(), 3);
+    assert_eq!(planetary_assembly(&s, 21, 21, 4, 10.0, 150.0, 10.0, 8.0, 1, c, c, DEFAULT_TOLERANCE).unwrap().parts.len(), 3);
+    assert_eq!(planetary_assembly(&s, 21, 21, 4, 10.0, 150.0, 8.0, 8.0, 1, c, 0.0, DEFAULT_TOLERANCE).unwrap().parts.len(), 3);
     // the file holds each part's solid once
     let text = a.step("planetary");
     assert_eq!(text.matches("MANIFOLD_SOLID_BREP(").count(), 2);
@@ -305,12 +331,12 @@ fn bevel_solids_are_closed_and_exact() {
         let pair = BevelPair::new(&s, [z1, z2], f64::to_radians(shaft), 12.0, true).unwrap();
         for which in 0..2 {
             for (hand, bore) in [(1, 8.0), (-1, 0.0)] {
-                let solid = bevel_gear_solid(&pair, which, bore, hand).unwrap();
+                let solid = bevel_gear_solid(&pair, which, bore, hand, DEFAULT_TOLERANCE).unwrap();
                 let what = format!("{z1}/{z2} at {shaft}, gear {}, hand {hand}, bore {bore}", which + 1);
                 let problems = solid.problems(1e-9);
                 assert!(problems.is_empty(), "{what}: {:?}", &problems[..problems.len().min(5)]);
                 let err = bevel_error(&solid, &pair, which, hand);
-                assert!(err < 2.0 * TOLERANCE, "{what}: a curve or surface is {err} mm from the exact shape");
+                assert!(err < 2.0 * DEFAULT_TOLERANCE, "{what}: a curve or surface is {err} mm from the exact shape");
             }
         }
     }
@@ -320,7 +346,7 @@ fn bevel_solids_are_closed_and_exact() {
 fn bevel_pairs_are_placed_like_the_meshes() {
     let s = system(30.0);
     for assembled in [true, false] {
-        let a = bevel_pair_assembly(&s, [21, 30], PI / 2.0, 12.0, [8.0, 8.0], 1, true, assembled).unwrap();
+        let a = bevel_pair_assembly(&s, [21, 30], PI / 2.0, 12.0, [8.0, 8.0], 1, true, assembled, DEFAULT_TOLERANCE).unwrap();
         let (_, frames) = bevel_pair_layout(&s, [21, 30], PI / 2.0, 12.0, [8.0, 8.0], 1, true, assembled).unwrap();
         for ((_, place), frame) in a.instances.iter().zip(&frames) {
             // apex and axis (the frames' axis points from the gear to the apex: local +z)
@@ -366,20 +392,20 @@ fn opencascade_reads_the_files() {
     let (teeth, width, bore) = (23, 8.0, 6.0);
     let exact = (outline_area(&s.spur_gear_pieces(teeth).unwrap()) - PI * (bore / 2.0) * (bore / 2.0)) * width;
     let cases: Vec<(&str, Vec<Solid>, Vec<f64>)> = vec![
-        ("plain", vec![spur_gear_solid(&s, teeth, width, bore, 1, 0.0, 0.0).unwrap()], vec![exact]),
-        ("chamfered", vec![spur_gear_solid(&s, 21, 10.0, 8.0, -1, c, c).unwrap()], vec![]),
-        ("ring", vec![ring_gear_solid(&s, 66, 6.0, 160.0, 1, c, 0.0).unwrap()], vec![]),
-        ("planetary", planetary_solids(&s, 21, 21, 3, 5.0, 150.0, 4.0, 3.0, 1, c, c).unwrap(), vec![]),
+        ("plain", vec![spur_gear_solid(&s, teeth, width, bore, 1, 0.0, 0.0, DEFAULT_TOLERANCE).unwrap()], vec![exact]),
+        ("chamfered", vec![spur_gear_solid(&s, 21, 10.0, 8.0, -1, c, c, DEFAULT_TOLERANCE).unwrap()], vec![]),
+        ("ring", vec![ring_gear_solid(&s, 66, 6.0, 160.0, 1, c, 0.0, DEFAULT_TOLERANCE).unwrap()], vec![]),
+        ("planetary", planetary_solids(&s, 21, 21, 3, 5.0, 150.0, 4.0, 3.0, 1, c, c, DEFAULT_TOLERANCE).unwrap(), vec![]),
     ];
     // Assemblies: written with each part once; read back, every instance.
     let assemblies = vec![
-        ("planetary_assembly", planetary_assembly(&s, 21, 21, 3, 5.0, 150.0, 3.0, 3.0, 1, c, c).unwrap()),
-        ("bevel_assembled", bevel_pair_assembly(&s, [21, 30], PI / 2.0, 12.0, [8.0, 8.0], 1, true, true).unwrap()),
-        ("bevel_print", bevel_pair_assembly(&s, [20, 20], f64::to_radians(130.0), 8.0, [6.0, 0.0], -1, true, false).unwrap()),
+        ("planetary_assembly", planetary_assembly(&s, 21, 21, 3, 5.0, 150.0, 3.0, 3.0, 1, c, c, DEFAULT_TOLERANCE).unwrap()),
+        ("bevel_assembled", bevel_pair_assembly(&s, [21, 30], PI / 2.0, 12.0, [8.0, 8.0], 1, true, true, DEFAULT_TOLERANCE).unwrap()),
+        ("bevel_print", bevel_pair_assembly(&s, [20, 20], f64::to_radians(130.0), 8.0, [6.0, 0.0], -1, true, false, DEFAULT_TOLERANCE).unwrap()),
     ];
     let mut files: Vec<(String, String, usize, Vec<f64>)> = cases
         .into_iter()
-        .map(|(name, solids, volumes)| (name.to_string(), step_file(&solids, name, TOLERANCE), solids.len(), volumes))
+        .map(|(name, solids, volumes)| (name.to_string(), step_file(&solids, name, DEFAULT_TOLERANCE), solids.len(), volumes))
         .collect();
     files.extend(assemblies.into_iter().map(|(name, a)| (name.to_string(), a.step(name), a.instances.len(), vec![])));
     for (name, text, count, volumes) in files {

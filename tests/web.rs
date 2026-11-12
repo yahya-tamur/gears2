@@ -34,6 +34,7 @@ fn options(kind: &str) -> Options {
         backlash_inner: Some(0.2),
         backlash_outer: None,
         layout: None,
+        step_deviation: 1e-4,
     }
 }
 
@@ -139,11 +140,14 @@ fn limits_are_where_their_checks_start_failing() {
             assert!(bb > bc, "{kind} {name} past its limit ({beyond}): {bb}, inside: {bc}");
             checked += 1;
         }
-        // tooth counts: a spur gear without a bore works at its minimum, not below
+        // tooth counts: a spur gear without a bore works at its minimum, not
+        // below (with a point spacing fine enough for its lands: the spacing
+        // doesn't change the minimum, but may not fit the smallest gears)
         if kind == "spur" {
             if let Some((_, Some(lo), _)) = limits(&o).into_iter().find(|l| l.0 == "teeth") {
                 let mut a = o.clone();
                 a.bore = 0.0;
+                a.ds = 0.005;
                 a.teeth = lo;
                 if badness(&a) < 1000.0 {
                     assert_eq!(badness(&a), 0.0, "spur at its minimum teeth {lo}");

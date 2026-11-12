@@ -18,16 +18,28 @@
 //! Neighbouring faces share their edges, built from the same data, so they
 //! match exactly: the outline at a height and the vertical curves where
 //! pieces meet are the boundary curves of the B-spline walls (see
-//! step::hermite_surface). Curves and surfaces stay within TOLERANCE (1e-4
-//! mm, a hundredth of the meshes' default surface deviation) of the exact
-//! shape.
+//! step::hermite_surface). The B-spline curves and surfaces stay within the
+//! given tolerance of the exact shape (DEFAULT_TOLERANCE, 1e-4 mm, is a
+//! hundredth of the meshes' default surface deviation); planes, cylinders,
+//! cones and circles are exact.
 
 use crate::gears::{GearSystem, Piece, Result};
 use crate::mesh::{check_bore, check_common, check_rim, EndZones};
 use crate::step::{add, cross, dot, hermite_breaks, hermite_curve, hermite_surface, scale, step_assembly, step_file, BSpline, Curve, Face, Placement, Solid, Surface, V3};
 
-/// How closely curves and surfaces follow the exact shape, in mm.
-pub const TOLERANCE: f64 = 1e-4;
+/// How closely the B-spline curves and surfaces follow the exact shape by
+/// default, in mm.
+pub const DEFAULT_TOLERANCE: f64 = 1e-4;
+
+/// The tolerance must be positive and sensible: below 1e-7 mm rounding
+/// (the file's 10 decimals, the derivatives) would dominate; above 0.1 mm
+/// the surfaces would be cruder than any mesh.
+pub fn check_tolerance(tol: f64) -> Result<()> {
+    if !(1e-7..=0.1).contains(&tol) {
+        return Err(crate::gears::GearError(format!("The STEP surface deviation must be between 0.0000001 and 0.1 mm (asked for {tol} mm).")));
+    }
+    Ok(())
+}
 
 const Z: V3 = [0.0, 0.0, 1.0];
 
@@ -74,7 +86,7 @@ fn flat_face(solid: &mut Solid, surface: Surface, same_sense: bool, loops: Vec<V
 /// An exact herringbone gear: `pieces` the outline (counterclockwise), the
 /// material inside it (spur) or outside it (ring), and a plain circle of
 /// radius `circle` (the bore or rim; 0 for none).
-fn gear_solid(pieces: &[Piece], zones: &EndZones, ring: bool, circle: f64) -> Solid {
+fn gear_solid(pieces: &[Piece], zones: &EndZones, ring: bool, circle: f64, tol: f64) -> Solid {
     let mut solid = Solid::default();
     let n = pieces.len();
     let (z_lo, z_hi, total) = (zones.z_lo, zones.z_hi, zones.total);
@@ -95,7 +107,7 @@ fn gear_solid(pieces: &[Piece], zones: &EndZones, ring: bool, circle: f64) -> So
             ([q.0, q.1, 0.0], [d.0, d.1, 0.0])
         }
     };
-    let ts: Vec<Vec<f64>> = (0..n).map(|i| hermite_breaks(&piece_fn(i), 0.0, 1.0, &[], TOLERANCE)).collect();
+    let ts: Vec<Vec<f64>> = (0..n).map(|i| hermite_breaks(&piece_fn(i), 0.0, 1.0, &[], tol)).collect();
     // Heights: where a helix at the outermost radius stays within tolerance.
     let r_max = pieces.iter().map(|p| (0..=8).map(|j| {
         let (q, _) = p.at(j as f64 / 8.0);
@@ -108,7 +120,7 @@ fn gear_solid(pieces: &[Piece], zones: &EndZones, ring: bool, circle: f64) -> So
             let p = turn((r_max, 0.0), theta(z));
             (add(p, scale(Z, z)), add(scale(perp(p), w), Z))
         };
-        hermite_breaks(&helix, a, b, &[], TOLERANCE)
+        hermite_breaks(&helix, a, b, &[], tol)
     }).collect();
 
     // the outline piece i at height z, turned by the twist there
@@ -279,20 +291,26 @@ fn gear_solid(pieces: &[Piece], zones: &EndZones, ring: bool, circle: f64) -> So
     solid
 }
 
-/// The exact solid of spur_gear_mesh() (same arguments).
-pub fn spur_gear_solid(s: &GearSystem, teeth: usize, width: f64, bore: f64, hand: i32, end_bottom: f64, end_top: f64) -> Result<Solid> {
+/// The exact solid of spur_gear_mesh() (same arguments), B-splines within
+/// `tol` mm.
+#[allow(clippy::too_many_arguments)]
+pub fn spur_gear_solid(s: &GearSystem, teeth: usize, width: f64, bore: f64, hand: i32, end_bottom: f64, end_top: f64, tol: f64) -> Result<Solid> {
     check_common(width, hand, end_bottom, end_top)?;
+    check_tolerance(tol)?;
     let zones = EndZones::new(s, teeth, width, end_bottom, end_top, hand, false);
     check_bore(s, &zones, bore, end_bottom > 0.0 || end_top > 0.0)?;
-    Ok(gear_solid(&s.spur_gear_pieces(teeth)?, &zones, false, bore / 2.0))
+    Ok(gear_solid(&s.spur_gear_pieces(teeth)?, &zones, false, bore / 2.0, tol))
 }
 
-/// The exact solid of ring_gear_mesh() (same arguments).
-pub fn ring_gear_solid(s: &GearSystem, teeth: usize, width: f64, rim: f64, hand: i32, end_bottom: f64, end_top: f64) -> Result<Solid> {
+/// The exact solid of ring_gear_mesh() (same arguments), B-splines within
+/// `tol` mm.
+#[allow(clippy::too_many_arguments)]
+pub fn ring_gear_solid(s: &GearSystem, teeth: usize, width: f64, rim: f64, hand: i32, end_bottom: f64, end_top: f64, tol: f64) -> Result<Solid> {
     check_common(width, hand, end_bottom, end_top)?;
+    check_tolerance(tol)?;
     let zones = EndZones::new(s, teeth, width, end_bottom, end_top, hand, true);
     check_rim(s, &zones, rim, end_bottom > 0.0 || end_top > 0.0)?;
-    Ok(gear_solid(&s.ring_gear_pieces(teeth)?, &zones, true, rim / 2.0))
+    Ok(gear_solid(&s.ring_gear_pieces(teeth)?, &zones, true, rim / 2.0, tol))
 }
 
 /// Parts written once each and placed one or more times (a STEP assembly).
@@ -301,12 +319,14 @@ pub struct Assembly {
     pub parts: Vec<(String, Solid)>,
     /// (part, where it goes), in the order of the meshes.
     pub instances: Vec<(usize, Placement)>,
+    /// The tolerance the parts were drawn to (the file's distance accuracy).
+    pub tolerance: f64,
 }
 
 impl Assembly {
-    /// One part, in place.
-    pub fn single(name: &str, solid: Solid) -> Assembly {
-        Assembly { parts: vec![(name.to_string(), solid)], instances: vec![(0, Placement::IDENTITY)] }
+    /// One part, in place, drawn to `tolerance`.
+    pub fn single(name: &str, solid: Solid, tolerance: f64) -> Assembly {
+        Assembly { parts: vec![(name.to_string(), solid)], instances: vec![(0, Placement::IDENTITY)], tolerance }
     }
 
     /// Every instance as a solid of its own, in place.
@@ -318,10 +338,10 @@ impl Assembly {
     /// assembly.
     pub fn step(&self, name: &str) -> String {
         if self.parts.len() == 1 && self.instances.len() == 1 {
-            return step_file(&self.solids(), name, TOLERANCE);
+            return step_file(&self.solids(), name, self.tolerance);
         }
         let parts: Vec<(&str, &Solid)> = self.parts.iter().map(|(n, s)| (n.as_str(), s)).collect();
-        step_assembly(&parts, &self.instances, name, TOLERANCE)
+        step_assembly(&parts, &self.instances, name, self.tolerance)
     }
 }
 
@@ -344,17 +364,18 @@ pub fn planetary_assembly(
     hand: i32,
     end_bottom: f64,
     end_top: f64,
+    tol: f64,
 ) -> Result<Assembly> {
     let (teeth_ring, layout, ring_rotation) = s.planetary_layout(teeth_sun, teeth_planet, planets, 0.0)?;
-    let planet = spur_gear_solid(s, teeth_planet, width, planet_bore, -hand, end_bottom, end_top)?;
-    let ring = ring_gear_solid(s, teeth_ring, width, rim, -hand, end_bottom, end_top)?;
+    let planet = spur_gear_solid(s, teeth_planet, width, planet_bore, -hand, end_bottom, end_top, tol)?;
+    let ring = ring_gear_solid(s, teeth_ring, width, rim, -hand, end_bottom, end_top, tol)?;
     let mut parts = vec![("planet".to_string(), planet)];
     let total = end_bottom + width + end_top;
     let sun = if teeth_sun == teeth_planet && bore == planet_bore && end_bottom == end_top {
         // upside down: x stays, y and z flip; the bottom face goes to the top
         (0, Placement { origin: [0.0, 0.0, total], axis: [0.0, 0.0, -1.0], x_dir: [1.0, 0.0, 0.0] })
     } else {
-        parts.push(("sun".to_string(), spur_gear_solid(s, teeth_sun, width, bore, hand, end_bottom, end_top)?));
+        parts.push(("sun".to_string(), spur_gear_solid(s, teeth_sun, width, bore, hand, end_bottom, end_top, tol)?));
         (parts.len() - 1, Placement::IDENTITY)
     };
     parts.push(("ring".to_string(), ring));
@@ -363,11 +384,11 @@ pub fn planetary_assembly(
         instances.push((0, Placement::turned(rotation, [center.0, center.1, 0.0])));
     }
     instances.push((parts.len() - 1, Placement::turned(ring_rotation, [0.0; 3])));
-    Ok(Assembly { parts, instances })
+    Ok(Assembly { parts, instances, tolerance: tol })
 }
 
 /// The exact solids of planetary_gear_mesh() (same arguments and order: sun,
-/// planets, ring), placed the same way.
+/// planets, ring), placed the same way, B-splines within `tol` mm.
 #[allow(clippy::too_many_arguments)]
 pub fn planetary_solids(
     s: &GearSystem,
@@ -381,6 +402,7 @@ pub fn planetary_solids(
     hand: i32,
     end_bottom: f64,
     end_top: f64,
+    tol: f64,
 ) -> Result<Vec<Solid>> {
-    Ok(planetary_assembly(s, teeth_sun, teeth_planet, planets, width, rim, bore, planet_bore, hand, end_bottom, end_top)?.solids())
+    Ok(planetary_assembly(s, teeth_sun, teeth_planet, planets, width, rim, bore, planet_bore, hand, end_bottom, end_top, tol)?.solids())
 }

@@ -12,6 +12,7 @@ fn options(kind: &str) -> Options {
         end_bottom: None, end_top: None, width: 10.0, bore: 8.0, planet_bore: 6.0, rim: 140.0, teeth: 21.0,
         ring_teeth: 63.0, sun_teeth: 21.0, planet_teeth: 21.0, planets: 4.0, teeth2: 30.0, shaft_angle: 90.0,
         face_width: 12.0, bore2: 8.0, backlash_inner: Some(0.2), backlash_outer: None, layout: None,
+        step_deviation: 1e-4,
     }
 }
 

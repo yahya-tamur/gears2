@@ -117,7 +117,7 @@ const SECTIONS = [
     ],
   },
   {
-    title: "Smoothness",
+    title: "STL smoothness",
     help: "How closely the flat triangles of the STL follow the true curved surfaces. Finer is smoother but makes larger files.",
     fields: [
       { name: "max_deviation", label: "Surface deviation", unit: "mm", value: "0.01",
@@ -126,6 +126,14 @@ const SECTIONS = [
         help: "Minimum distance between points." },
       { name: "fillet_deviation", label: "Root rounding deviation", unit: "mm", optional: "auto",
         help: "Surface deviation for the rounded corners at the bottom of the gaps between teeth (see Root rounding). A larger value here doesn't affect how the gear works, and significantly simplifies the mesh." },
+    ],
+  },
+  {
+    title: "STEP smoothness",
+    help: "How closely the STEP file's curved surfaces follow the true shape. Its flat faces, bores, chamfer cones and spherical ends are always exact.",
+    fields: [
+      { name: "step_deviation", label: "Surface deviation", unit: "mm", value: "0.0001",
+        help: "The STEP file's curved tooth surfaces may deviate from the exact shape by up to this much, either way. Smaller makes larger files; 0.0001 mm is far finer than any printer or machine can make." },
     ],
   },
 ];
@@ -171,6 +179,7 @@ const RANGES = {
   backlash_inner: [0, 1, 0.05], backlash_outer: [0, 1, 0.05], rim: [40, 240, 10],
   end_bottom: [0, 10, 0.5], end_top: [0, 10, 0.5],
   max_deviation: [0.002, 0.04, 0.002], ds: [0.01, 0.2, 0.01], fillet_deviation: [0.01, 0.2, 0.01],
+  step_deviation: [0.00005, 0.001, 0.00005],
 };
 // Typing a value past a slider's end moves that end out to it (as in
 // Desmos), but never past what the value can be at all: a pressure angle is

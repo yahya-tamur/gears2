@@ -16,7 +16,7 @@
 //! built from the same data.
 
 use crate::bevel::{sph, BevelPair, SphPiece};
-use crate::gear_step::{Assembly, TOLERANCE};
+use crate::gear_step::{check_tolerance, Assembly};
 use crate::gears::{GearError, GearSystem, Result};
 use crate::step::{add, cross, dot, hermite_breaks, hermite_curve, hermite_surface, norm, scale, sub, unit, Curve, Face, Placement, Solid, Surface, V3};
 
@@ -45,11 +45,13 @@ fn piece_at(p: &SphPiece, t: f64) -> (V3, V3) {
     (p.at(t), scale(sub(p.at(t + h), p.at(t - h)), 1.0 / (2.0 * h)))
 }
 
-/// The exact solid of bevel_gear_mesh() (same arguments).
-pub fn bevel_gear_solid(pair: &BevelPair, which: usize, bore: f64, hand: i32) -> Result<Solid> {
+/// The exact solid of bevel_gear_mesh() (same arguments), B-splines within
+/// `tol` mm.
+pub fn bevel_gear_solid(pair: &BevelPair, which: usize, bore: f64, hand: i32, tol: f64) -> Result<Solid> {
     if hand != 1 && hand != -1 {
         return Err(GearError("The twist direction must be 1 or -1.".into()));
     }
+    check_tolerance(tol)?;
     pair.check_bore(which, bore)?;
     let g = &pair.gears[which];
     let (r, f) = (pair.r_cone, pair.face);
@@ -73,7 +75,7 @@ pub fn bevel_gear_solid(pair: &BevelPair, which: usize, bore: f64, hand: i32) ->
         hermite_breaks(&move |t: f64| {
             let (q, d) = piece_at(&p, t);
             (scale(q, r), scale(d, r))
-        }, 0.0, 1.0, &[], TOLERANCE)
+        }, 0.0, 1.0, &[], tol)
     }).collect();
     let q_tip = sph(g.tip, 0.0);
     let rhos: Vec<Vec<f64>> = (0..2).map(|half| {
@@ -82,7 +84,7 @@ pub fn bevel_gear_solid(pair: &BevelPair, which: usize, bore: f64, hand: i32) ->
             let q = turn(q_tip, tw(rho));
             (scale(q, rho), add(q, scale(perp(q), w)))
         };
-        hermite_breaks(&path, levels[half], levels[half + 1], &[], TOLERANCE)
+        hermite_breaks(&path, levels[half], levels[half + 1], &[], tol)
     }).collect();
 
     let junction = |j: usize| pieces[j % n].at(0.0);
@@ -199,12 +201,13 @@ pub fn bevel_pair_assembly(
     hand: i32,
     backlash_at_toe: bool,
     assembled: bool,
+    tol: f64,
 ) -> Result<Assembly> {
     let pair = BevelPair::new(s, teeth, shaft_angle, face, backlash_at_toe)?;
     let r = pair.r_cone;
     let parts = vec![
-        ("gear 1".to_string(), bevel_gear_solid(&pair, 0, bores[0], hand)?),
-        ("gear 2".to_string(), bevel_gear_solid(&pair, 1, bores[1], hand)?),
+        ("gear 1".to_string(), bevel_gear_solid(&pair, 0, bores[0], hand, tol)?),
+        ("gear 2".to_string(), bevel_gear_solid(&pair, 1, bores[1], hand, tol)?),
     ];
     // Each gear's lowest point in its own frame: the center of its heel face.
     let low = |which: usize| -r * pair.fold(which).cos();
@@ -233,5 +236,5 @@ pub fn bevel_pair_assembly(
         }
         out
     };
-    Ok(Assembly { parts, instances })
+    Ok(Assembly { parts, instances, tolerance: tol })
 }
