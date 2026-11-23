@@ -3,7 +3,9 @@
 
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { stlBlob } from "./stl.js";
+import { stlBlob, stlBytes } from "./stl.js";
+import { options as checkOptions, GearError } from "./api.js";
+import { DEFAULTS } from "./defaults.js";
 
 // ------------------------------------------------------------------ options
 //
@@ -16,13 +18,13 @@ const SECTIONS = [
     title: "Gear set",
     help: "Spur and ring gears made with the same gear set always mesh. Bevel gears only mesh with the partner made with them; for them, these lengths are at the outer end of the teeth.",
     fields: [
-      { name: "module", label: "Module", unit: "mm", value: "2",
+      { name: "module", label: "Module", unit: "mm",
         help: () => "Tooth size. Two meshing gears behave like two wheels rolling on each other; each wheel's edge is called the gear's pitch circle, " +
           "which lies about halfway up the teeth. A gear's pitch circle is teeth × module across, and neighbouring teeth are " +
           `π × module apart along it${now(Math.PI * num("module", NaN), "now ")}. Gears only mesh with the same module.` },
-      { name: "pressure_angle", label: "Pressure angle", unit: "°", value: "20",
+      { name: "pressure_angle", label: "Pressure angle", unit: "°",
         help: "Slope of the tooth sides at the pitch circle (see Module). 20° is standard. Larger angles give stronger but more pointed teeth, which push the gears apart harder." },
-      { name: "helix_angle", label: "Helix angle", unit: "°", value: "30",
+      { name: "helix_angle", label: "Helix angle", unit: "°",
         help: () => {
           const pa = num("pressure_angle", NaN) * Math.PI / 180, ha = num("helix_angle", NaN) * Math.PI / 180;
           const deg = (a) => Number.isFinite(a) ? `${+(a * 180 / Math.PI).toFixed(1)}°` : "–";
@@ -42,7 +44,7 @@ const SECTIONS = [
         } },
       { name: "height", label: "Tooth height", unit: "mm", optional: "auto",
         help: () => `How far each tooth reaches into its mate: half of it above the pitch circle (see Module), half below. The gaps go a root gap deeper. Leave blank for the standard 2 × module${now(toothHeight())}.` },
-      { name: "backlash", label: "Backlash", unit: "mm", value: "0.2", kinds: ["spur", "ring", "planetary"],
+      { name: "backlash", label: "Backlash", unit: "mm", kinds: ["spur", "ring", "planetary"],
         help: "Play between meshing teeth: hold one gear, and the other can rock back and forth by this much, measured along its pitch circle (see Module). Leaves room for printing tolerances; 0.1–0.3 mm is typical." },
       { name: "clearance", label: "Root gap", unit: "mm", optional: "auto",
         help: () => `Space between a tooth tip and the bottom of the gap it enters, so tips never touch bottom. Leave blank for the standard module ÷ 4${now(rootGap())}.` },
@@ -53,29 +55,29 @@ const SECTIONS = [
   {
     title: "Gear",
     fields: [
-      { name: "kind", label: "Type", select: [["spur", "Spur gear"], ["ring", "Ring gear"], ["planetary", "Planetary set"], ["bevel", "Bevel pair"]], value: "planetary",
+      { name: "kind", label: "Type", select: [["spur", "Spur gear"], ["ring", "Ring gear"], ["planetary", "Planetary set"], ["bevel", "Bevel pair"]],
         helps: {
           spur: "A spur gear: a wheel with teeth around the outside.",
           ring: "A ring gear: a ring with teeth around the inside, for spur gears from this gear set to roll in.",
           planetary: "A planetary set: a sun gear in the middle, planets around it and a ring gear outside, all meshing together and positioned ready to assemble.",
           bevel: "A bevel pair: two gears on cones whose shafts meet at an angle. A bevel gear only meshes with the partner it was made with, so both are made together.",
         } },
-      { name: "teeth", label: "Teeth", whole: true, value: "21", kinds: ["spur", "bevel"], labels: { bevel: "Gear 1 teeth" },
+      { name: "teeth", label: "Teeth", whole: true, kinds: ["spur", "bevel"], labels: { bevel: "Gear 1 teeth" },
         helps: { bevel: "Teeth on gear 1 (blue in the preview)." },
         help: "Number of teeth. The gear set sets the smallest number allowed (shown below)." },
-      { name: "ring_teeth", label: "Teeth", whole: true, value: "63", kinds: ["ring"],
+      { name: "ring_teeth", label: "Teeth", whole: true, kinds: ["ring"],
         help: "Number of teeth. The gear set sets the smallest number allowed (shown below)." },
-      { name: "teeth2", label: "Gear 2 teeth", whole: true, value: "30", kinds: ["bevel"],
+      { name: "teeth2", label: "Gear 2 teeth", whole: true, kinds: ["bevel"],
         help: "Teeth on gear 2 (green in the preview). Together with the shaft angle, the two tooth counts set how steeply each gear's teeth slope." },
-      { name: "shaft_angle", label: "Shaft angle", unit: "°", value: "90", kinds: ["bevel"],
+      { name: "shaft_angle", label: "Shaft angle", unit: "°", kinds: ["bevel"],
         help: "Angle between the two gears' shafts, which meet at a point. 90° is a right angle." },
-      { name: "sun_teeth", label: "Sun teeth", whole: true, value: "21", kinds: ["planetary"],
+      { name: "sun_teeth", label: "Sun teeth", whole: true, kinds: ["planetary"],
         help: "Teeth on the sun gear in the middle. The ring gets sun + 2 × planet teeth." },
-      { name: "planet_teeth", label: "Planet teeth", whole: true, value: "21", kinds: ["planetary"],
+      { name: "planet_teeth", label: "Planet teeth", whole: true, kinds: ["planetary"],
         help: "Teeth on each planet gear." },
-      { name: "planets", label: "Planets", whole: true, value: "4", kinds: ["planetary"],
+      { name: "planets", label: "Planets", whole: true, kinds: ["planetary"],
         help: "Number of planet gears, spaced evenly. Sun teeth + ring teeth must be divisible by this, and the planets must fit side by side." },
-      { name: "face_width", label: "Face width", unit: "mm", value: "12", kinds: ["bevel"],
+      { name: "face_width", label: "Face width", unit: "mm", kinds: ["bevel"],
         help: () => {
           const toe = bevelToe(), w = num("face_width", NaN);
           const reach = w / (1 - toe); // outer end of the teeth to where the shafts meet
@@ -83,24 +85,24 @@ const SECTIONS = [
             "toward the inner end, all the way to the point where the two shafts meet. A typical face width is at most " +
             `a third of the way from the outer edge to that point${now(reach / 3, "here: ")}.`;
         } },
-      { name: "width", label: "Face width", unit: "mm", value: "30", kinds: ["spur", "ring", "planetary"],
+      { name: "width", label: "Face width", unit: "mm", kinds: ["spur", "ring", "planetary"],
         help: "Height of the part with full teeth, along the axis. The chamfers are added below and above it." },
-      { name: "bore", label: "Bore", unit: "mm", value: "10", kinds: ["spur", "planetary", "bevel"], labels: { planetary: "Sun bore", bevel: "Gear 1 bore" },
+      { name: "bore", label: "Bore", unit: "mm", kinds: ["spur", "planetary", "bevel"], labels: { planetary: "Sun bore", bevel: "Gear 1 bore" },
         help: "Diameter of the hole through the middle for a shaft. 0 for none.",
         helps: { bevel: "Diameter of the hole through gear 1 for its shaft. 0 for none." } },
-      { name: "bore2", label: "Gear 2 bore", unit: "mm", value: "8", kinds: ["bevel"],
+      { name: "bore2", label: "Gear 2 bore", unit: "mm", kinds: ["bevel"],
         help: "Diameter of the hole through gear 2 for its shaft. 0 for none." },
-      { name: "backlash_inner", label: "Backlash at inner end", unit: "mm", value: "0.2", optional: "auto", kinds: ["bevel"],
+      { name: "backlash_inner", label: "Backlash at inner end", unit: "mm", optional: "auto", kinds: ["bevel"],
         help: () => "Play between meshing teeth (hold one gear, and the other can rock back and forth by this much), measured along the pitch circle (see Module) at the inner end of the teeth, where it is smallest; it grows toward the outer end. Set this or the outer end's, and leave the other blank" +
           (blank("backlash_inner") ? `${now(num("backlash_outer", NaN) * bevelToe())}.` : ".") },
       { name: "backlash_outer", label: "Backlash at outer end", unit: "mm", optional: "auto", kinds: ["bevel"],
         help: () => "Play between meshing teeth, measured along the pitch circle (see Module) at the outer end of the teeth, where it is largest. Set this or the inner end's, and leave the other blank" +
           (blank("backlash_outer") ? `${now(num("backlash_inner", NaN) / bevelToe())}.` : ".") },
-      { name: "planet_bore", label: "Planet bore", unit: "mm", value: "8", kinds: ["planetary"],
+      { name: "planet_bore", label: "Planet bore", unit: "mm", kinds: ["planetary"],
         help: "Diameter of the hole through each planet. 0 for none." },
-      { name: "rim", label: "Ring outer diameter", unit: "mm", value: "140", kinds: ["ring", "planetary"],
+      { name: "rim", label: "Ring outer diameter", unit: "mm", kinds: ["ring", "planetary"],
         help: "Diameter of the ring gear's smooth outside. It must leave a wall around the bottoms of the tooth gaps." },
-      { name: "hand", label: "Twist direction", select: [["1", "Counterclockwise"], ["-1", "Clockwise"]], value: "1",
+      { name: "hand", label: "Twist direction", select: [["1", "Counterclockwise"], ["-1", "Clockwise"]],
         help: "Which way the lower half of the herringbone teeth (see Helix angle) turns going up, seen from above.",
         helps: {
           spur: "Which way the lower half of the herringbone teeth (see Helix angle) turns going up, seen from above. Two spur gears that mesh need opposite directions; a spur gear inside a ring gear needs the ring's direction.",
@@ -112,7 +114,7 @@ const SECTIONS = [
         help: () => chamferHelp("below") },
       { name: "end_top", label: "Top chamfer", unit: "mm", optional: "auto", kinds: ["spur", "ring", "planetary"],
         help: () => chamferHelp("above") },
-      { name: "layout", label: "STL layout", select: [["assembled", "Assembled"], ["print", "Ready to print"]], value: "assembled", kinds: ["bevel"],
+      { name: "layout", label: "STL layout", select: [["assembled", "Assembled"], ["print", "Ready to print"]], kinds: ["bevel"],
         help: "Assembled: the two gears in place, meshing. Ready to print: each gear standing on its flat back, side by side." },
     ],
   },
@@ -120,9 +122,9 @@ const SECTIONS = [
     title: "STL smoothness",
     help: "How closely the flat triangles of the STL follow the true curved surfaces. Finer is smoother but makes larger files.",
     fields: [
-      { name: "max_deviation", label: "Surface deviation", unit: "mm", value: "0.01",
+      { name: "max_deviation", label: "Surface deviation", unit: "mm",
         help: "The mesh may deviate from the exact shape by up to this much, to reduce triangles. Distances between parts can only grow, never shrink." },
-      { name: "ds", label: "Minimum point spacing", unit: "mm", value: "0.05",
+      { name: "ds", label: "Minimum point spacing", unit: "mm",
         help: "Minimum distance between points." },
       { name: "fillet_deviation", label: "Root rounding deviation", unit: "mm", optional: "auto",
         help: "Surface deviation for the rounded corners at the bottom of the gaps between teeth (see Root rounding). A larger value here doesn't affect how the gear works, and significantly simplifies the mesh." },
@@ -132,11 +134,15 @@ const SECTIONS = [
     title: "STEP smoothness",
     help: "How closely the STEP file's curved surfaces follow the true shape. Its flat faces, bores, chamfer cones and spherical ends are always exact.",
     fields: [
-      { name: "step_deviation", label: "Surface deviation", unit: "mm", value: "0.0001",
+      { name: "step_deviation", label: "Surface deviation", unit: "mm",
         help: "The STEP file's curved tooth surfaces may deviate from the exact shape by up to this much, either way. Smaller makes larger files; 0.0001 mm is far finer than any printer or machine can make." },
     ],
   },
 ];
+// Starting values (blank for auto), shared with the API: see defaults.js.
+for (const f of SECTIONS.flatMap((s) => s.fields)) {
+  if (DEFAULTS[f.name] != null) f.value = String(DEFAULTS[f.name]);
+}
 
 // Current values, for the hover texts of values left on auto.
 function num(name, fallback) {
@@ -1093,6 +1099,7 @@ function requestBuild() {
   if (read.errors) {
     setStatus(read.errors.join("\n"), true);
     setButton(auto ? "stale" : "manual");
+    if (!busy) notify({ ok: false, error: read.errors.join("\n") });
     return;
   }
   if (busy) {
@@ -1410,10 +1417,14 @@ worker.onmessage = (event) => {
   }
   if (msg.type === "fatal") {
     setStatus("Couldn't load the gear generator: " + msg.message, true);
+    notify({ ok: false, error: "Couldn't load the gear generator: " + msg.message });
     return;
   }
   if (msg.type === "step") {
-    stepDone(msg);
+    if (stepRequests.has(msg.id)) {
+      stepRequests.get(msg.id)(msg);
+      stepRequests.delete(msg.id);
+    } else stepDone(msg);
     return;
   }
   if (msg.id !== requestId) return;
@@ -1421,6 +1432,7 @@ worker.onmessage = (event) => {
   if (msg.type === "error") {
     setStatus(msg.message, true);
     finished(seconds, true);
+    if (!busy) notify({ ok: false, error: msg.message });
     return;
   }
   const kind = inputs.kind.value;
@@ -1434,6 +1446,78 @@ worker.onmessage = (event) => {
     (seconds > AUTO_LIMIT ? "\nThat took a while, so changes now wait for Generate." : "")
   );
   finished(seconds);
+  if (!busy) notify({ ok: true, info: msg.info });
+};
+
+// ---------------------------------------------------------- page API
+//
+// window.gears lets a program (a browser automation script, the console)
+// drive this page: read and change the settings, wait for the build, and
+// take the files. See API.md. (For making gears without the page, use
+// api.js instead.)
+
+let outcome = null; // the last finished build: { ok, info } or { ok: false, error }
+let waiters = [];
+function notify(result) {
+  outcome = result;
+  const w = waiters;
+  waiters = [];
+  for (const resolve of w) resolve(result);
+}
+const nextOutcome = () => new Promise((resolve) => waiters.push(resolve));
+// The current build's outcome, once nothing is building.
+const settled = () => (busy || !ready || !outcome ? nextOutcome() : Promise.resolve(outcome));
+const stepRequests = new Map(); // worker request id (negative) -> resolve
+let stepRequestId = 0;
+
+window.gears = {
+  get version() { return VERSION; }, // declared further down
+  defaults: { ...DEFAULTS },
+  // The page's settings, in the API's form (null for auto).
+  get() {
+    const { values } = settingsObject();
+    const out = {};
+    for (const name of Object.keys(DEFAULTS)) {
+      const v = values[name];
+      out[name] = v === "auto" ? null : name === "hand" ? Number(v) : v;
+    }
+    return out;
+  },
+  // Changes the settings given (with reset, the rest go back to their
+  // defaults), then builds: resolves to the build's outcome, as result().
+  async set(values = {}, { reset = false } = {}) {
+    const checked = checkOptions({ ...(reset ? {} : this.get()), ...values }); // throws on bad names and types
+    while (busy) await nextOutcome();
+    const state = {};
+    for (const [name, v] of Object.entries(checked)) state[name] = v === null ? "auto" : v;
+    if (historyTimer) record();
+    const notSet = Object.entries(rows).filter(([, e]) => e.set && !e.set.checked).map(([n]) => n);
+    const done = nextOutcome();
+    applySettings({ values: state, not_set: notSet });
+    for (const name of Object.keys(values)) if (sliders[name]) extendRange(name);
+    record(); // so Ctrl+Z works as after any change
+    return done;
+  },
+  // The current settings' build: { ok: true, info } or { ok: false, error }.
+  result: () => settled(),
+  // The STL of the current settings, as a Uint8Array.
+  async stl() {
+    const r = await settled();
+    if (!r.ok) throw new GearError(r.error);
+    return stlBytes(current.parts);
+  },
+  // The STEP file of the current settings, as text.
+  async step() {
+    const r = await settled();
+    if (!r.ok) throw new GearError(r.error);
+    const id = -++stepRequestId;
+    const msg = await new Promise((resolve) => {
+      stepRequests.set(id, resolve);
+      worker.postMessage({ id, params: current.params, step: true });
+    });
+    if (!msg.text) throw new GearError(msg.message);
+    return msg.text;
+  },
 };
 
 function saveFile(blob, name) {

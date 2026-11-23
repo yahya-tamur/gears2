@@ -39,6 +39,9 @@ jobs:
       - name: Build WebAssembly
         run: wasm-pack build --release --target web --out-dir web/pkg --no-typescript
 
+      - name: Test the JavaScript API
+        run: node tests/api.mjs
+
       - uses: actions/configure-pages@v6
 
       - uses: actions/upload-pages-artifact@v5

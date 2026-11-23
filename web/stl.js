@@ -5,6 +5,11 @@
 // 2-byte attribute (0). parts: [{ positions: Float32Array, indices }].
 
 export function stlBlob(parts) {
+  return new Blob([stlBytes(parts)], { type: "model/stl" });
+}
+
+// The same file as a Uint8Array.
+export function stlBytes(parts) {
   const count = parts.reduce((n, p) => n + p.indices.length / 3, 0);
   const buffer = new ArrayBuffer(84 + 50 * count);
   const view = new DataView(buffer);
@@ -24,5 +29,5 @@ export function stlBlob(parts) {
       offset += 2;
     }
   }
-  return new Blob([buffer], { type: "model/stl" });
+  return new Uint8Array(buffer);
 }
