@@ -2,7 +2,9 @@
 // the page runs (compiled to WebAssembly), without the page. Works in
 // browsers, Deno and Node (18+). See API.md for the full description.
 //
-//   import * as gears from "https://<site>/api.js";
+//   import * as gears from "https://yahya-tamur.github.io/gears2/api.js";
+//   (Node: npm install https://yahya-tamur.github.io/gears2/gears2-api.tgz,
+//   then import * as gears from "gears2")
 //   const stl = await gears.stl({ kind: "spur", teeth: 30, bore: 8 });
 //
 // Every function takes an options object; anything left out takes the page's

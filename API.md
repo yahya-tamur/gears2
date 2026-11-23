@@ -52,7 +52,8 @@ The page's "?" hover texts describe each option in more detail.
 ## `api.js`
 
 ```js
-import * as gears from "https://<site>/api.js";   // or a local path to web/api.js
+import * as gears from "https://yahya-tamur.github.io/gears2/api.js"; // Deno, browsers
+import * as gears from "gears2";                                       // Node: see below
 
 const stl  = await gears.stl({ kind: "spur", teeth: 30, bore: 8 });  // Uint8Array
 const step = await gears.step({ kind: "spur", teeth: 30, bore: 8 }); // string
@@ -88,16 +89,24 @@ so the page stays responsive.
 
 ### Node
 
+Node can't import modules over https, so install the package from the site
+instead (Node 18 or later; no npm account or build needed):
+
+```bash
+npm install https://yahya-tamur.github.io/gears2/gears2-api.tgz
+```
+
 ```js
-// save_gear.mjs: run inside a checkout, with web/pkg built (see below)
+// save_gear.mjs
 import { writeFile } from "node:fs/promises";
-import * as gears from "./web/api.js";
+import * as gears from "gears2";
 
 await writeFile("sun.stl", await gears.stl({ kind: "spur", teeth: 24, bore: 5 }));
 ```
 
-Node can't import modules over https, so use a checkout. Build the
-WebAssembly once with:
+The package is rebuilt with the site on every change; run the install again
+to update. In a checkout of this repository, `import "./web/api.js"` also
+works, once the WebAssembly is built:
 
 ```bash
 wasm-pack build --release --target web --out-dir web/pkg --no-typescript
@@ -122,7 +131,7 @@ its build.
 
 ```js
 // Playwright
-await page.goto("https://<site>/");
+await page.goto("https://yahya-tamur.github.io/gears2/");
 const outcome = await page.evaluate(() => gears.set({ kind: "spur", teeth: 40 }));
 // { ok: true, info: { triangles: ..., spin: [...], ... } }
 const bytes = await page.evaluate(async () => Array.from(await gears.stl()));

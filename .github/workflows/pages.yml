@@ -1,5 +1,5 @@
-# Runs the tests, builds the WebAssembly package and publishes web/ to
-# GitHub Pages on every push to main.
+# Runs the tests, builds the WebAssembly package and the npm tarball of the
+# JavaScript API, and publishes web/ to GitHub Pages on every push to main.
 
 name: Pages
 
@@ -41,6 +41,11 @@ jobs:
 
       - name: Test the JavaScript API
         run: node tests/api.mjs
+
+      # web/gears2-api.tgz, for npm install <its URL> (Node can't import
+      # api.js over https)
+      - name: Pack the JavaScript API for npm
+        run: tools/pack_api.sh && tests/api_package.sh
 
       - uses: actions/configure-pages@v6
 
